@@ -1,0 +1,13 @@
+[package]
+name = "renderer-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+viewer-model.workspace = true
+wgpu.workspace = true

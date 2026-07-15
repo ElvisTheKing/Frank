@@ -1,0 +1,36 @@
+name: imagecomparetool
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    working_dir: /workspace
+    environment:
+      CARGO_TARGET_DIR: /workspace/target
+    volumes:
+      - .:/workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - linux-target:/workspace/target
+
+  windows-msvc:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.windows-msvc
+    working_dir: /workspace
+    environment:
+      CARGO_TARGET_DIR: /workspace/target
+    volumes:
+      - .:/workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - windows-target:/workspace/target
+      - xwin-cache:/root/.cache/cargo-xwin
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  linux-target:
+  windows-target:
+  xwin-cache:

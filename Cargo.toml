@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/desktop",
+    "crates/image-loader",
+    "crates/renderer-wgpu",
+    "crates/ui-egui",
+    "crates/viewer-model",
+]
+default-members = ["apps/desktop"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+rust-version = "1.92"
+
+[workspace.dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+crossbeam-channel = "0.5"
+eframe = { version = "0.35.0", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+egui = "0.35.0"
+egui-wgpu = "0.35.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+image-loader = { path = "crates/image-loader" }
+memchr = "2.7"
+moxcms = "0.8.1"
+renderer-wgpu = { path = "crates/renderer-wgpu" }
+rawler = "0.7.2"
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+ui-egui = { path = "crates/ui-egui" }
+viewer-model = { path = "crates/viewer-model" }
+wgpu = "29.0.0"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = true

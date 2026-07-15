@@ -1,0 +1,129 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux UI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libssl-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            pkg-config
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Run tests
+        run: cargo test --workspace
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build release executable
+        run: cargo build --release --locked -p imagecompare-desktop
+
+      - name: Package Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/imagecompare-windows-${{ runner.arch }} | Out-Null
+          Copy-Item target/release/imagecompare-desktop.exe dist/imagecompare-windows-${{ runner.arch }}/
+          Copy-Item LICENSE,README.md,COPYRIGHT dist/imagecompare-windows-${{ runner.arch }}/
+          Compress-Archive -Path dist/imagecompare-windows-${{ runner.arch }} -DestinationPath dist/imagecompare-windows-${{ runner.arch }}.zip
+
+      - name: Package Linux build
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="imagecompare-linux-${{ runner.arch }}"
+          mkdir -p "dist/$package"
+          install -m 755 target/release/imagecompare-desktop "dist/$package/imagecompare-desktop"
+          cp LICENSE README.md COPYRIGHT "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="dist/ImageCompareTool.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          install -m 755 target/release/imagecompare-desktop "$app/Contents/MacOS/imagecompare-desktop"
+          cp packaging/macos/Info.plist "$app/Contents/Info.plist"
+          cp LICENSE README.md COPYRIGHT "$app/Contents/Resources/"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/imagecompare-macos-${{ runner.arch }}.zip"
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagecompare-windows-${{ runner.arch }}
+          path: dist/imagecompare-windows-${{ runner.arch }}.zip
+          if-no-files-found: error
+
+      - name: Upload Linux artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagecompare-linux-${{ runner.arch }}
+          path: dist/imagecompare-linux-${{ runner.arch }}.tar.gz
+          if-no-files-found: error
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagecompare-macos-${{ runner.arch }}
+          path: dist/imagecompare-macos-${{ runner.arch }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ImageCompareTool ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            release-assets/*.zip
+            release-assets/*.tar.gz

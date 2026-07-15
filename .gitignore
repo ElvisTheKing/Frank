@@ -1,0 +1,18 @@
+/target/
+/.idea/
+/.vscode/
+*.swp
+*.tmp
+*.log
+
+# Generated image pyramids and local sessions never belong in source control.
+/.imagecompare-cache/
+/*.ictsession.recovery
+
+# Platform packaging output.
+/dist/
+/bundle/
+
+# Local camera corpus: never commit user photographs.
+/data/*
+!/data/README.md

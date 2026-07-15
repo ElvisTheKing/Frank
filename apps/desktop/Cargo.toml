@@ -1,0 +1,15 @@
+[package]
+name = "imagecompare-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+image-loader.workspace = true
+renderer-wgpu.workspace = true
+rfd.workspace = true
+ui-egui.workspace = true
+viewer-model.workspace = true

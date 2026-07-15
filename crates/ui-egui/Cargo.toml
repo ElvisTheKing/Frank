@@ -1,0 +1,11 @@
+[package]
+name = "ui-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+egui.workspace = true
+renderer-wgpu.workspace = true
+viewer-model.workspace = true
