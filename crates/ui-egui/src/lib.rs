@@ -342,22 +342,17 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
         {
             output.open_requested = true;
         }
-        ui.menu_button("Panes", |ui| {
-            if ui
-                .add_enabled(
-                    workspace.panes.len() < MAX_PANES,
-                    egui::Button::new("Add pane"),
-                )
-                .clicked()
-                && let Ok(pane_id) = workspace.add_pane()
-            {
-                output.added_panes.push(pane_id);
-                ui.close();
-            }
-            ui.separator();
-            ui.weak("Use − in a pane header to close that pane");
-            ui.weak(format!("{} panes", workspace.panes.len()));
-        });
+        if ui
+            .add_enabled(
+                workspace.panes.len() < MAX_PANES,
+                egui::Button::new("Add pane"),
+            )
+            .on_hover_text("Add a comparison pane; close individual panes with − in their headers")
+            .clicked()
+            && let Ok(pane_id) = workspace.add_pane()
+        {
+            output.added_panes.push(pane_id);
+        }
         ui.menu_button("Layout", |ui| {
             for mode in LayoutMode::ALL {
                 ui.selectable_value(&mut workspace.layout_mode, mode, mode.label());
