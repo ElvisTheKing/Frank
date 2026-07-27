@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Run cross-platform builds and release publication only when a version tag is pushed.
+
 ## [0.2.0] - 2026-07-28
 
 This is the first non-test tagged release of ImageCompareTool.

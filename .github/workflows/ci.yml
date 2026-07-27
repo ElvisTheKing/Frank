@@ -1,9 +1,9 @@
-name: ci
+name: release
 
 on:
   push:
-  pull_request:
-  workflow_dispatch:
+    tags:
+      - "v*"
 
 permissions:
   contents: read
