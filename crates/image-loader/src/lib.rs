@@ -34,6 +34,7 @@ pub use raw_preview::{
 pub const DECODE_TILE_SIZE: u32 = 512;
 pub const DEFAULT_DECODE_BUDGET_BYTES: usize = 160 * 1024 * 1024;
 const RAW_PREVIEW_ESTIMATED_BYTES: usize = 80 * 1024 * 1024;
+const MAX_PARALLEL_FULL_RAW_DECODE: usize = 2;
 
 #[must_use]
 pub fn supported_extensions() -> Vec<&'static str> {
@@ -403,12 +404,14 @@ fn worker_loop(
     budget: &Arc<DecodeBudget>,
 ) {
     while let Ok(request) = request_rx.recv() {
+        let full_raw = request.mode == LoadMode::FullRaw;
+        let requested_bytes = if full_raw {
+            full_raw_reservation_bytes(budget.capacity)
+        } else {
+            estimated_decode_bytes(&request.path, request.mode)
+        };
         let result = budget
-            .acquire(
-                estimated_decode_bytes(&request.path, request.mode),
-                &request.cancelled,
-                request.mode == LoadMode::FullRaw,
-            )
+            .acquire(requested_bytes, &request.cancelled)
             .and_then(|permit| {
                 decode_image(
                     &request.path,
@@ -431,6 +434,10 @@ fn worker_loop(
             return;
         }
     }
+}
+
+fn full_raw_reservation_bytes(capacity: usize) -> usize {
+    capacity.div_ceil(MAX_PARALLEL_FULL_RAW_DECODE)
 }
 
 fn estimated_decode_bytes(path: &Path, mode: LoadMode) -> usize {
@@ -478,15 +485,10 @@ impl DecodeBudget {
         self: &Arc<Self>,
         requested: usize,
         cancelled: &AtomicBool,
-        exclusive: bool,
     ) -> Result<DecodePermit, LoadError> {
         let reserved = requested.min(self.capacity).max(1);
         let mut used = self.used.lock().unwrap_or_else(|error| error.into_inner());
-        while if exclusive {
-            *used != 0
-        } else {
-            *used > self.capacity.saturating_sub(reserved)
-        } {
+        while *used > self.capacity.saturating_sub(reserved) {
             check_cancelled(cancelled)?;
             let (next, _) = self
                 .changed
@@ -1128,13 +1130,13 @@ mod tests {
     fn decode_budget_blocks_until_capacity_is_released() {
         let budget = Arc::new(DecodeBudget::new(100));
         let cancelled = Arc::new(AtomicBool::new(false));
-        let first = budget.acquire(80, &cancelled, false).expect("first permit");
+        let first = budget.acquire(80, &cancelled).expect("first permit");
         let (tx, rx) = mpsc::channel();
         let waiting_budget = Arc::clone(&budget);
         let waiting_cancelled = Arc::clone(&cancelled);
         let worker = thread::spawn(move || {
             let permit = waiting_budget
-                .acquire(30, &waiting_cancelled, false)
+                .acquire(30, &waiting_cancelled)
                 .expect("waiting permit");
             tx.send(permit).expect("receiver should exist");
         });
@@ -1267,28 +1269,34 @@ mod tests {
     }
 
     #[test]
-    fn exclusive_full_raw_reservation_waits_for_preview_work() {
+    fn full_raw_reservations_allow_two_developments_but_bound_a_third() {
         let budget = Arc::new(DecodeBudget::new(100));
         let cancelled = Arc::new(AtomicBool::new(false));
-        let preview = budget
-            .acquire(80, &cancelled, false)
-            .expect("preview permit");
+        let reservation = full_raw_reservation_bytes(budget.capacity);
+        assert_eq!(reservation, 50);
+        let first = budget
+            .acquire(reservation, &cancelled)
+            .expect("first full RAW permit");
+        let second = budget
+            .acquire(reservation, &cancelled)
+            .expect("second full RAW permit");
         let (tx, rx) = mpsc::channel();
         let waiting_budget = Arc::clone(&budget);
         let waiting_cancelled = Arc::clone(&cancelled);
         let worker = thread::spawn(move || {
             let permit = waiting_budget
-                .acquire(usize::MAX, &waiting_cancelled, true)
-                .expect("exclusive permit");
+                .acquire(reservation, &waiting_cancelled)
+                .expect("third full RAW permit");
             tx.send(permit).expect("receiver should exist");
         });
 
         assert!(rx.recv_timeout(Duration::from_millis(40)).is_err());
-        drop(preview);
-        let full_raw = rx
+        drop(first);
+        let third = rx
             .recv_timeout(Duration::from_secs(1))
-            .expect("preview release should wake full RAW");
-        drop(full_raw);
+            .expect("one release should wake the third full RAW");
+        drop(second);
+        drop(third);
         worker.join().expect("worker should finish");
     }
 }

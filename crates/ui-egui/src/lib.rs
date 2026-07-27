@@ -2,6 +2,7 @@
 
 use egui::{Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2};
 use renderer_wgpu::{PaneLayout, WorkspaceLayout};
+use serde::{Deserialize, Serialize};
 use viewer_model::{
     LayoutMode, MAX_NOTE_CHARS, MAX_PANES, MIN_PANES, NormalizedPoint, PaneId, SyncMode,
     TitleFields, Workspace,
@@ -9,7 +10,6 @@ use viewer_model::{
 
 const TOOLBAR_HEIGHT: f32 = 44.0;
 const TOOLBAR_MARGIN: f32 = 8.0;
-const TOOLBAR_GROUP_GAP: f32 = 10.0;
 const TITLE_HEIGHT: f32 = 46.0;
 const LINK_CONTROL_WIDTH: f32 = 46.0;
 const NOTE_CONTROL_WIDTH: f32 = 28.0;
@@ -21,6 +21,7 @@ pub struct UiState {
     pub show_pixel_grid: bool,
     pub show_pane_controls: bool,
     pub develop_raws_on_load: bool,
+    pub active_is_raw: bool,
     pub raw_mode: RawModeChoice,
     pub sync_adjustments: bool,
     pub theme: AppTheme,
@@ -35,6 +36,7 @@ impl Default for UiState {
             show_pixel_grid: false,
             show_pane_controls: true,
             develop_raws_on_load: false,
+            active_is_raw: false,
             raw_mode: RawModeChoice::default(),
             sync_adjustments: false,
             theme: AppTheme::default(),
@@ -45,18 +47,20 @@ impl Default for UiState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AppTheme {
     #[default]
+    System,
     Dark,
     Light,
 }
 
 impl AppTheme {
-    const fn egui_theme(self) -> egui::Theme {
+    const fn egui_theme_preference(self) -> egui::ThemePreference {
         match self {
-            Self::Dark => egui::Theme::Dark,
-            Self::Light => egui::Theme::Light,
+            Self::System => egui::ThemePreference::System,
+            Self::Dark => egui::ThemePreference::Dark,
+            Self::Light => egui::ThemePreference::Light,
         }
     }
 }
@@ -82,9 +86,9 @@ struct UiPalette {
     note_hover: Color32,
 }
 
-fn palette(theme: AppTheme) -> UiPalette {
+fn palette(theme: egui::Theme) -> UiPalette {
     match theme {
-        AppTheme::Dark => UiPalette {
+        egui::Theme::Dark => UiPalette {
             toolbar: Color32::from_rgb(24, 29, 34),
             toolbar_border: Color32::from_rgb(48, 56, 64),
             separator: Color32::from_rgb(61, 67, 74),
@@ -103,7 +107,7 @@ fn palette(theme: AppTheme) -> UiPalette {
             note_filled: Color32::from_rgb(48, 90, 125),
             note_hover: Color32::from_rgb(75, 82, 92),
         },
-        AppTheme::Light => UiPalette {
+        egui::Theme::Light => UiPalette {
             toolbar: Color32::from_rgb(239, 242, 245),
             toolbar_border: Color32::from_rgb(191, 199, 207),
             separator: Color32::from_rgb(164, 172, 180),
@@ -125,7 +129,7 @@ fn palette(theme: AppTheme) -> UiPalette {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RawModeChoice {
     AsShot,
     #[default]
@@ -141,6 +145,14 @@ impl RawModeChoice {
             Self::AsShot => "As shot",
             Self::AutoReference => "Auto reference",
             Self::LinearDiagnostic => "Linear diagnostic",
+        }
+    }
+
+    const fn short_label(self) -> &'static str {
+        match self {
+            Self::AsShot => "As shot",
+            Self::AutoReference => "Auto",
+            Self::LinearDiagnostic => "Linear",
         }
     }
 }
@@ -209,8 +221,8 @@ struct PaneDrawGeometry {
 }
 
 pub fn draw_workspace(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> UiOutput {
-    ui.ctx().set_theme(state.theme.egui_theme());
-    let colors = palette(state.theme);
+    ui.ctx().set_theme(state.theme.egui_theme_preference());
+    let colors = palette(ui.ctx().theme());
     let full_rect = ui.max_rect();
     let pixels_per_point = ui.ctx().pixels_per_point();
     let toolbar_rect =
@@ -331,8 +343,30 @@ fn rect_to_physical(rect: Rect, pixels_per_point: f32) -> [f32; 4] {
     ]
 }
 
+fn toolbar_group_separator(ui: &mut Ui) {
+    ui.add_space(2.0);
+    ui.separator();
+    ui.add_space(2.0);
+}
+
+const fn sync_mode_short_label(mode: SyncMode) -> &'static str {
+    match mode {
+        SyncMode::FitRelative => "Fit-relative",
+        SyncMode::WidthRelative => "Width-relative",
+        SyncMode::HeightRelative => "Height-relative",
+        SyncMode::SourcePixels => "Source pixels",
+    }
+}
+
 fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> ToolbarOutput {
     let mut output = ToolbarOutput::default();
+    let has_any_image = workspace.panes.iter().any(|pane| pane.image_id.is_some());
+    let active_has_image = workspace.active_pane.is_some_and(|active| {
+        workspace
+            .panes
+            .iter()
+            .any(|pane| pane.id == active && pane.image_id.is_some())
+    });
     ui.horizontal_centered(|ui| {
         ui.add_space(TOOLBAR_MARGIN);
         if ui
@@ -358,108 +392,123 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                 ui.selectable_value(&mut workspace.layout_mode, mode, mode.label());
             }
         });
-        ui.add_space(TOOLBAR_GROUP_GAP);
-        if ui.button("Fit").clicked() {
-            workspace.fit_all();
-        }
-        if ui
-            .button("100%")
-            .on_hover_text("View at 100% and develop the active RAW at full source resolution")
-            .clicked()
-        {
-            workspace.one_to_one_all();
-            output.view_one_to_one_requested = true;
-        }
-        ui.add_space(TOOLBAR_GROUP_GAP);
-        let mut synchronized = workspace.synchronized;
-        if ui.checkbox(&mut synchronized, "Sync").changed() {
-            workspace.set_synchronized(synchronized);
-        }
-        ui.menu_button(workspace.sync_mode.label(), |ui| {
-            ui.strong("Synchronization");
-            for mode in SyncMode::ALL {
-                ui.selectable_value(&mut workspace.sync_mode, mode, mode.label());
+        toolbar_group_separator(ui);
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if ui
+                .add_enabled(has_any_image, egui::Button::new("Fit"))
+                .on_hover_text("Fit all images to their panes")
+                .clicked()
+            {
+                workspace.fit_all();
             }
-            ui.separator();
-            if ui.button("Reset alignment").clicked() {
-                workspace.reset_sync_adjustments();
-                ui.close();
+            if ui
+                .add_enabled(has_any_image, egui::Button::new("1:1"))
+                .on_hover_text("One source pixel per physical screen pixel")
+                .clicked()
+            {
+                workspace.one_to_one_all();
+                output.view_one_to_one_requested = true;
             }
         });
-        ui.add_space(TOOLBAR_GROUP_GAP);
-        if ui
-            .selectable_label(state.show_pane_controls, "Controls")
-            .on_hover_text("Show or hide pane headers for borderless comparison")
-            .clicked()
-        {
-            state.show_pane_controls = !state.show_pane_controls;
-        }
-        ui.add_space(TOOLBAR_GROUP_GAP);
-        ui.menu_button("RAW", |ui| {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let mut synchronized = workspace.synchronized;
+            if ui.checkbox(&mut synchronized, "Sync").changed() {
+                workspace.set_synchronized(synchronized);
+            }
+            ui.menu_button(sync_mode_short_label(workspace.sync_mode), |ui| {
+                ui.strong("Synchronized navigation");
+                for mode in SyncMode::ALL {
+                    ui.selectable_value(&mut workspace.sync_mode, mode, mode.label());
+                }
+                ui.separator();
+                if ui.button("Reset alignment").clicked() {
+                    workspace.reset_sync_adjustments();
+                    ui.close();
+                }
+            });
+        });
+        toolbar_group_separator(ui);
+        ui.menu_button(format!("RAW: {}", state.raw_mode.short_label()), |ui| {
             ui.strong("Development recipe");
             for mode in RawModeChoice::ALL {
                 ui.selectable_value(&mut state.raw_mode, mode, mode.label());
             }
             ui.checkbox(&mut state.develop_raws_on_load, "Develop RAWs on load");
             ui.separator();
-            if ui.button("Develop active RAW").clicked() {
-                output.raw_develop_requested = Some(state.raw_mode);
-                ui.close();
-            }
-            if ui.button("Match embedded preview").clicked() {
-                output.preview_match_requested = true;
-                ui.close();
-            }
+            ui.add_enabled_ui(state.active_is_raw, |ui| {
+                if ui.button("Develop active RAW").clicked() {
+                    output.raw_develop_requested = Some(state.raw_mode);
+                    ui.close();
+                }
+                if ui.button("Match embedded preview").clicked() {
+                    output.preview_match_requested = true;
+                    ui.close();
+                }
+            });
         });
-        ui.menu_button("Adjust", |ui| {
-            let active_index = workspace
-                .active_pane
-                .and_then(|active| workspace.panes.iter().position(|pane| pane.id == active));
-            if let Some(active_index) = active_index {
-                ui.strong("Active pane exposure");
-                let mut exposure = workspace.panes[active_index].manual_exposure_ev;
-                let changed = ui
-                    .add(egui::Slider::new(&mut exposure, -4.0..=4.0).text("EV"))
-                    .changed();
-                if changed {
-                    workspace.panes[active_index].manual_exposure_ev = exposure;
-                    if state.sync_adjustments {
-                        for pane in &mut workspace.panes {
-                            if pane.linked {
-                                pane.manual_exposure_ev = exposure;
+        ui.add_enabled_ui(active_has_image, |ui| {
+            ui.menu_button("Exposure", |ui| {
+                let active_index = workspace
+                    .active_pane
+                    .and_then(|active| workspace.panes.iter().position(|pane| pane.id == active));
+                if let Some(active_index) = active_index {
+                    ui.strong("Active pane exposure");
+                    let mut exposure = workspace.panes[active_index].manual_exposure_ev;
+                    let changed = ui
+                        .add(egui::Slider::new(&mut exposure, -4.0..=4.0).text("EV"))
+                        .changed();
+                    if changed {
+                        workspace.panes[active_index].manual_exposure_ev = exposure;
+                        if state.sync_adjustments {
+                            for pane in &mut workspace.panes {
+                                if pane.linked {
+                                    pane.manual_exposure_ev = exposure;
+                                }
                             }
                         }
                     }
-                }
-                ui.checkbox(&mut state.sync_adjustments, "Apply to linked panes");
-                ui.separator();
-                if ui.button("Normalize panes to active").clicked() {
-                    output.exposure_match_requested = true;
-                    ui.close();
-                }
-                if ui.button("Reset matching").clicked() {
-                    output.exposure_match_reset_requested = true;
-                    ui.close();
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Reset active").clicked() {
-                        workspace.panes[active_index].manual_exposure_ev = 0.0;
+                    ui.checkbox(&mut state.sync_adjustments, "Apply to linked panes");
+                    ui.separator();
+                    if ui.button("Normalize panes to active").clicked() {
+                        output.exposure_match_requested = true;
+                        ui.close();
                     }
-                    if ui.button("Reset all").clicked() {
-                        for pane in &mut workspace.panes {
-                            pane.manual_exposure_ev = 0.0;
+                    if ui.button("Reset matching").clicked() {
+                        output.exposure_match_reset_requested = true;
+                        ui.close();
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Reset active").clicked() {
+                            workspace.panes[active_index].manual_exposure_ev = 0.0;
                         }
-                    }
-                });
-            } else {
-                ui.weak("Select a pane first");
-            }
+                        if ui.button("Reset all").clicked() {
+                            for pane in &mut workspace.panes {
+                                pane.manual_exposure_ev = 0.0;
+                            }
+                        }
+                    });
+                } else {
+                    ui.weak("Select a pane first");
+                }
+            });
         });
-        ui.menu_button("View", |ui| {
+        toolbar_group_separator(ui);
+        let mut clean_view = !state.show_pane_controls;
+        if ui
+            .checkbox(&mut clean_view, "Clean view")
+            .on_hover_text("Hide pane headers for borderless comparison")
+            .changed()
+        {
+            state.show_pane_controls = !clean_view;
+        }
+        ui.menu_button("...", |ui| {
             ui.strong("Theme");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.theme, AppTheme::Dark, "Dark");
                 ui.selectable_value(&mut state.theme, AppTheme::Light, "Light");
+                ui.selectable_value(&mut state.theme, AppTheme::Dark, "Dark");
+                ui.selectable_value(&mut state.theme, AppTheme::System, "System");
             });
             ui.separator();
             ui.strong("Pane title fields");
@@ -481,8 +530,9 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
             }
             ui.separator();
             ui.checkbox(&mut state.show_pixel_grid, "Pixel grid");
-            ui.checkbox(&mut state.show_pane_controls, "Pane controls");
-        });
+        })
+        .response
+        .on_hover_text("Display and title settings");
     });
     output
 }
@@ -1023,6 +1073,14 @@ fn grid_rects(rect: Rect, pane_count: usize, layout_mode: LayoutMode) -> Vec<Rec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_theme_falls_back_to_dark_when_unavailable() {
+        let context = egui::Context::default();
+        context.set_theme(AppTheme::System.egui_theme_preference());
+        assert_eq!(context.system_theme(), None);
+        assert_eq!(context.theme(), egui::Theme::Dark);
+    }
 
     #[test]
     fn four_panes_form_two_by_two_grid() {

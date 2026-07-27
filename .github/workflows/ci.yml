@@ -55,7 +55,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/imagecompare-windows-${{ runner.arch }} | Out-Null
           Copy-Item target/release/imagecompare-desktop.exe dist/imagecompare-windows-${{ runner.arch }}/
-          Copy-Item LICENSE,README.md,COPYRIGHT dist/imagecompare-windows-${{ runner.arch }}/
+          Copy-Item LICENSE,README.md,CHANGELOG.md,COPYRIGHT dist/imagecompare-windows-${{ runner.arch }}/
           Compress-Archive -Path dist/imagecompare-windows-${{ runner.arch }} -DestinationPath dist/imagecompare-windows-${{ runner.arch }}.zip
 
       - name: Package Linux build
@@ -66,7 +66,7 @@ jobs:
           package="imagecompare-linux-${{ runner.arch }}"
           mkdir -p "dist/$package"
           install -m 755 target/release/imagecompare-desktop "dist/$package/imagecompare-desktop"
-          cp LICENSE README.md COPYRIGHT "dist/$package/"
+          cp LICENSE README.md CHANGELOG.md COPYRIGHT "dist/$package/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
 
       - name: Package macOS application
@@ -78,7 +78,7 @@ jobs:
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           install -m 755 target/release/imagecompare-desktop "$app/Contents/MacOS/imagecompare-desktop"
           cp packaging/macos/Info.plist "$app/Contents/Info.plist"
-          cp LICENSE README.md COPYRIGHT "$app/Contents/Resources/"
+          cp LICENSE README.md CHANGELOG.md COPYRIGHT "$app/Contents/Resources/"
           ditto -c -k --sequesterRsrc --keepParent "$app" "dist/imagecompare-macos-${{ runner.arch }}.zip"
 
       - name: Upload Windows artifact

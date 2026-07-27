@@ -16,7 +16,10 @@ This is the persistent product backlog. Performance work is resumed when an acce
 - [x] Apply a compact comparison-first visual design with clipped two-row headers and one-pixel pane separators.
 - [x] Use full RAW coordinates while showing embedded previews and develop automatically past preview-native zoom.
 - [x] Add develop-on-load, exact batch pane sizing, per-pane close controls, borderless controls hiding, and image context menus.
-- [x] Provide complete explicit dark and light themes, defaulting to dark independently of the operating-system theme.
+- [x] Deduplicate completed/pending RAW development and allow two bounded full RAW developments concurrently.
+- [x] Reorganize the toolbar into workspace, navigation, processing, and presentation groups with Clean view mode.
+- [x] Provide Light, Dark, and System themes, with native system-theme detection and a Dark fallback.
+- [x] Persist versioned global UI preferences across restarts without restoring comparison sessions.
 
 ## Release 1
 

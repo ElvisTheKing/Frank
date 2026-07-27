@@ -8,4 +8,5 @@ rust-version.workspace = true
 [dependencies]
 egui.workspace = true
 renderer-wgpu.workspace = true
+serde.workspace = true
 viewer-model.workspace = true

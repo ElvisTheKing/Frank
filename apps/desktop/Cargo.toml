@@ -11,5 +11,6 @@ egui.workspace = true
 image-loader.workspace = true
 renderer-wgpu.workspace = true
 rfd.workspace = true
+serde.workspace = true
 ui-egui.workspace = true
 viewer-model.workspace = true

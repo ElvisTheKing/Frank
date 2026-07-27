@@ -28,9 +28,10 @@ The project is in its Phase-0 architecture spike. The current vertical slice est
 - physical zoom percentages where 100% means one image pixel per framebuffer pixel;
 - persistent per-pane pan/zoom registration captured from free mode and preserved during synchronized navigation;
 - nearest-neighbor image sampling at 100% and closer for sharp pixel boundaries;
-- a compact comparison-first interface with two-row clipped pane headers, grouped controls, and one-pixel separators;
+- a compact comparison-first interface with two-row clipped pane headers, clearly separated workspace/navigation/processing/presentation toolbar groups, Clean view, and one-pixel pane separators;
 - optional borderless comparison with pane controls hidden and compact title overlays;
-- complete Dark and Light interface themes selectable from the View menu, with Dark as the application default;
+- Light, Dark, and system-matched themes selectable from the View menu, with System as the default and a Dark fallback when detection is unavailable;
+- versioned global preferences that survive restarts without reopening the previous comparison session;
 - an eframe desktop host forced to the `wgpu` backend;
 - workspace tests and cross-platform CI.
 
@@ -42,7 +43,9 @@ Build the Windows executable as described below, then use **Open…**, pass JPEG
 
     dist\windows-x64\imagecompare-desktop.exe photo-a.jpg photo-b.jpg
 
-For RAW files, navigation and zoom always use the full RAW dimensions even while the embedded JPEG is displayed. Development starts automatically when zoom passes the preview's native resolution; **Develop RAWs on load** can request it immediately instead. **View 1:1** also reaches full source detail. The RAW selector offers As Shot, Auto Reference, and Linear Diagnostic recipes. **Match Preview** compares the active RAW rendering with its retained embedded-JPEG statistics and applies a GPU exposure offset. **Normalize** works on both RAW and JPEG panes relative to the active pane. These display adjustments update a per-pane GPU uniform and do not redevelop or re-upload an image. Full RAW development runs exclusively to limit concurrent memory pressure.
+For RAW files, navigation and zoom always use the full RAW dimensions even while the embedded JPEG is displayed. Development starts automatically when zoom passes the preview's native resolution; **Develop RAWs on load** can request it immediately instead. **View 1:1** also reaches full source detail and does not redevelop a completed or pending full-resolution RAW. The RAW selector offers As Shot, Auto Reference, and Linear Diagnostic recipes; explicitly selecting a different recipe redevelops, while an identical request is deduplicated. **Match Preview** compares the active RAW rendering with its retained embedded-JPEG statistics and applies a GPU exposure offset. **Normalize** works on both RAW and JPEG panes relative to the active pane. These display adjustments update a per-pane GPU uniform and do not redevelop or re-upload an image. The decode budget permits at most two simultaneous full RAW developments to improve batch latency while bounding peak memory pressure.
+
+Global interface choices are saved automatically every five seconds and when the application closes. This includes the theme, Clean view, pixel grid, RAW-on-load and RAW recipe choices, synchronization settings, layout, and configured title fields. Open images, notes, pane ordering, and pan/zoom remain session-only; restoring complete comparison sessions is intentionally still in the backlog.
 
 To generate a deterministic 12 MP JPEG for smoke or performance testing:
 
@@ -90,6 +93,7 @@ The desktop shell must not own decoding, viewport mathematics, cache policy, or 
 
 Architecture decisions are recorded under [docs/adr](docs/adr).
 Feature work and deferred optimization tasks are tracked in [TASKS.md](TASKS.md).
+Release history is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The local OM-5 corpus result is recorded in [the RAW preview benchmark](docs/benchmark-om5-preview-2026-07-11.md).
 
