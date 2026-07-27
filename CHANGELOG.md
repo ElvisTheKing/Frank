@@ -6,14 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-28
+
 ### Changed
 
 - Run cross-platform builds and release publication only when a version tag is pushed.
 - Adopt Frank as the public product name while retaining stable internal executable and application identifiers.
+- Replace the development-oriented README with a concise user-facing description and feature list.
 
 ## [0.2.0] - 2026-07-28
 
-This is the first non-test tagged release of Frank, previously developed under the ImageCompareTool working name.
+This was the first non-test tagged release, published under the ImageCompareTool working name.
 
 ### Added
 
@@ -35,5 +38,6 @@ This is the first non-test tagged release of Frank, previously developed under t
 - Limited RAW-only actions to RAW panes and kept RAW preview matching as a non-destructive GPU display adjustment.
 - Marked Windows release builds as GUI applications so they no longer open an additional console window.
 
-[Unreleased]: https://github.com/ElvisTheKing/Frank/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ElvisTheKing/Frank/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ElvisTheKing/Frank/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ElvisTheKing/Frank/compare/v0.1.0-test.2...v0.2.0
