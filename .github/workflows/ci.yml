@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app="dist/ImageCompareTool.app"
+          app="dist/Frank.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           install -m 755 target/release/imagecompare-desktop "$app/Contents/MacOS/imagecompare-desktop"
           cp packaging/macos/Info.plist "$app/Contents/Info.plist"
@@ -121,7 +121,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          name: ImageCompareTool ${{ github.ref_name }}
+          name: Frank ${{ github.ref_name }}
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |

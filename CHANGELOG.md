@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to ImageCompareTool are documented in this file.
+All notable changes to Frank are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -9,10 +9,11 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Run cross-platform builds and release publication only when a version tag is pushed.
+- Adopt Frank as the public product name while retaining stable internal executable and application identifiers.
 
 ## [0.2.0] - 2026-07-28
 
-This is the first non-test tagged release of ImageCompareTool.
+This is the first non-test tagged release of Frank, previously developed under the ImageCompareTool working name.
 
 ### Added
 

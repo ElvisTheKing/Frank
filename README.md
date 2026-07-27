@@ -1,6 +1,8 @@
-# ImageCompareTool
+# Frank
 
-ImageCompareTool is a fast, cross-platform desktop viewer for photographers and pixel peepers who want to compare fine detail, exposure, and rendering across multiple images.
+> *frankly, Frank is an image compare tool*
+
+Frank is a fast, cross-platform desktop viewer for photographers and pixel peepers who want to compare fine detail, exposure, and rendering across multiple images.
 
 ## Features
 

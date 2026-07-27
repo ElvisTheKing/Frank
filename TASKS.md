@@ -1,4 +1,4 @@
-# ImageCompareTool development tasks
+# Frank development tasks
 
 This is the persistent product backlog. Performance work is resumed when an acceptance gate fails, not merely because another micro-optimization is possible.
 

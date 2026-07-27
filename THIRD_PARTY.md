@@ -1,6 +1,6 @@
 # Third-party notices
 
-ImageCompareTool is distributed under AGPL-3.0-or-later, but its dependencies retain their own licenses. `Cargo.lock` is the authoritative version inventory for a build.
+Frank is distributed under AGPL-3.0-or-later, but its dependencies retain their own licenses. `Cargo.lock` is the authoritative version inventory for a build.
 
 ## Rawler 0.7.2
 

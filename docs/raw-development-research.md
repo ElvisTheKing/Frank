@@ -37,7 +37,7 @@ We should preserve the original EXIF exposure-compensation value as metadata, wh
 
 ### Highlight handling must precede destructive clipping
 
-RapidRAW issues #246 and #419 show two failure modes relevant to us: Olympus/Panasonic clipped channels becoming purple, and recoverable highlights being flattened to white. RapidRAW initially hardcoded a compression point, then made the clipping point adjustable because camera behavior differs. ImageCompareTool should avoid an arbitrary post-demosaic clamp and retain a high-precision, unbounded intermediate until the view transform.
+RapidRAW issues #246 and #419 show two failure modes relevant to us: Olympus/Panasonic clipped channels becoming purple, and recoverable highlights being flattened to white. RapidRAW initially hardcoded a compression point, then made the clipping point adjustable because camera behavior differs. Frank should avoid an arbitrary post-demosaic clamp and retain a high-precision, unbounded intermediate until the view transform.
 
 ### Camera-JPEG matching is useful but is not neutral
 
@@ -120,4 +120,3 @@ Do not fix the reported darkness with a fixed +2 to +3 EV gain or direct preview
 - [RapidRAW #246: Olympus clipped highlights turn purple](https://github.com/CyberTimon/RapidRAW/issues/246)
 - [RapidRAW #419: highlights clip too quickly](https://github.com/CyberTimon/RapidRAW/issues/419)
 - [darktable PR #19347: Fuji DR metadata compensation](https://github.com/darktable-org/darktable/pull/19347)
-

@@ -23,7 +23,7 @@ use crate::{
     workspace_batch::resize_workspace_for_batch,
 };
 
-const APP_NAME: &str = "ImageCompareTool";
+const APP_NAME: &str = "Frank";
 const APP_ID: &str = "org.imagecomparetool.desktop";
 const GPU_UPLOAD_BUDGET_PER_FRAME: usize = 32 * 1024 * 1024;
 

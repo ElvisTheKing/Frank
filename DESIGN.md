@@ -1,4 +1,4 @@
-# ImageCompareTool — product and technical design
+# Frank — product and technical design
 
 Status: Draft for review  
 Date: 2026-07-11  
@@ -6,7 +6,7 @@ Scope: Greenfield desktop application for Windows, macOS, and Linux
 
 ## 1. Executive decision
 
-Build ImageCompareTool as a fully native Rust application using `wgpu` for the tiled image renderer and `egui` for the deliberately small application UI. Phase 0 uses `eframe` as a thin, WGPU-only desktop host over `winit`; the image renderer, viewport model, and native services remain project-owned crates so the host can be replaced with direct `winit` if profiling finds a meaningful constraint.
+Build Frank as a fully native Rust application using `wgpu` for the tiled image renderer and `egui` for the deliberately small application UI. Phase 0 uses `eframe` as a thin, WGPU-only desktop host over `winit`; the image renderer, viewport model, and native services remain project-owned crates so the host can be replaced with direct `winit` if profiling finds a meaningful constraint.
 
 Use one native `wgpu` surface, device, queue, and frame submission for both image rendering and UI. Rust owns the whole path: file access, metadata, decoding, color conversion, pyramid generation, cache policy, pane compositing, and controls. The renderer draws tiled image panes first and egui title strips/controls over them afterward. Large pixel buffers never cross a language boundary or IPC channel and processed GPU textures never need to be read back merely for display.
 
@@ -32,7 +32,7 @@ The recommended product boundary is:
 
 ## 2. Product intent
 
-ImageCompareTool should make it effortless to answer: “What differs between these images at the same place and scale?”
+Frank should make it effortless to answer: “What differs between these images at the same place and scale?”
 
 Primary qualities, in order:
 
@@ -68,7 +68,7 @@ These assumptions let development begin before all product questions are settled
 
 The project uses `AGPL-3.0-or-later`. Its strong copyleft prevents distributed closed-source derivatives, and modified network services must offer corresponding source to their users. Commercial use and sale remain allowed when all AGPL obligations are met; an extra no-sale condition would make the project non-open-source and is therefore not added.
 
-A later trademark policy may reserve the official ImageCompareTool name and branding so third parties cannot present forks as official releases. Contributions are accepted under the same project license unless a separate contributor agreement is adopted later.
+A later trademark policy may reserve the official Frank name and branding so third parties cannot present forks as official releases. Contributions are accepted under the same project license unless a separate contributor agreement is adopted later.
 
 ## 3. Scope by release
 
@@ -545,7 +545,7 @@ Plan code signing/notarization before public beta, not after feature completion:
 ## 13. Repository shape
 
 ```text
-ImageCompareTool/
+Frank/
   apps/desktop/                 # native eframe/WGPU host (releases 1–2)
   apps/web/                     # planned WASM/eframe host (release 3)
   crates/
