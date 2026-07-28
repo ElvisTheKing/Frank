@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Use a Windows-safe temporary filename in the JPEG EXIF orientation test so release CI passes on Windows.
+
 ## [0.2.1] - 2026-07-28
 
 ### Changed

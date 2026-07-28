@@ -1222,9 +1222,8 @@ mod tests {
             .expect("fixture encodes");
 
         let path = std::env::temp_dir().join(format!(
-            "imagecompare-orientation-{}-{}.jpg",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            "imagecompare-orientation-{}.jpg",
+            std::process::id()
         ));
         std::fs::write(&path, encoded.into_inner()).expect("fixture writes");
         let decoded = decode_jpeg(&path, &AtomicBool::new(false)).expect("fixture decodes");
