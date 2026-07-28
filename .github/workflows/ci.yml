@@ -9,12 +9,34 @@ permissions:
   contents: read
 
 jobs:
+  release:
+    name: Create tagged release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Frank ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+
   build:
     name: Build (${{ matrix.os }})
+    needs: release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-24.04]
+        include:
+          - os: windows-latest
+            package: dist/imagecompare-windows-*.zip
+          - os: macos-latest
+            package: dist/imagecompare-macos-*.zip
+          - os: ubuntu-24.04
+            package: dist/imagecompare-linux-*.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -81,49 +103,8 @@ jobs:
           cp LICENSE README.md CHANGELOG.md COPYRIGHT "$app/Contents/Resources/"
           ditto -c -k --sequesterRsrc --keepParent "$app" "dist/imagecompare-macos-${{ runner.arch }}.zip"
 
-      - name: Upload Windows artifact
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+      - name: Publish platform package
+        uses: softprops/action-gh-release@v3
         with:
-          name: imagecompare-windows-${{ runner.arch }}
-          path: dist/imagecompare-windows-${{ runner.arch }}.zip
-          if-no-files-found: error
-
-      - name: Upload Linux artifact
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: imagecompare-linux-${{ runner.arch }}
-          path: dist/imagecompare-linux-${{ runner.arch }}.tar.gz
-          if-no-files-found: error
-
-      - name: Upload macOS artifact
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: imagecompare-macos-${{ runner.arch }}
-          path: dist/imagecompare-macos-${{ runner.arch }}.zip
-          if-no-files-found: error
-
-  release:
-    name: Publish tagged release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Download platform packages
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Frank ${{ github.ref_name }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
-          files: |
-            release-assets/*.zip
-            release-assets/*.tar.gz
+          files: ${{ matrix.package }}
+          fail_on_unmatched_files: true
