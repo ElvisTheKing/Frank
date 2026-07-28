@@ -119,6 +119,13 @@ mod tests {
     }
 
     #[test]
+    fn preview_curve_uses_neutral_gamma_for_flat_source_samples() {
+        let (ev, gamma) = fit_preview_curve([0.1; 5], [0.4; 5]);
+        assert!((ev - 2.0).abs() < 1.0e-5);
+        assert_eq!(gamma, 1.0);
+    }
+
+    #[test]
     fn region_luminance_rejects_clipped_extremes() {
         let grid = LuminanceGrid {
             width: 4,
@@ -138,6 +145,41 @@ mod tests {
         assert_eq!(
             intersect_region([0.0, 0.1, 0.8, 1.0], [0.2, 0.0, 1.0, 0.7]),
             [0.2, 0.1, 0.8, 0.7]
+        );
+    }
+
+    #[test]
+    fn visible_region_uses_viewport_scale_and_clamps_to_image_edges() {
+        let mut pane = viewer_model::Pane::placeholder(1, "candidate");
+        let area = ui_egui::PanePaintArea {
+            pane_id: pane.id,
+            rect: egui::Rect::NOTHING,
+            physical_size: [200.0, 100.0],
+        };
+        assert_eq!(visible_normalized_region(&pane, &area), None);
+
+        pane.image_size = Some([1_000, 500]);
+        pane.viewport.center = viewer_model::NormalizedPoint { x: 0.1, y: 0.9 };
+        let region = visible_normalized_region(&pane, &area).expect("image has dimensions");
+        for (actual, expected) in region.into_iter().zip([0.0, 0.8, 0.2, 1.0]) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn region_luminance_rejects_empty_or_undersampled_regions() {
+        let grid = LuminanceGrid {
+            width: 2,
+            height: 2,
+            values: vec![0.1; 4],
+        };
+        assert_eq!(
+            robust_region_luminance(&grid, [0.5, 0.5, 0.5, 0.9], 1.0, 0.0),
+            None
+        );
+        assert_eq!(
+            robust_region_luminance(&grid, [0.0, 0.0, 1.0, 1.0], 1.0, 0.0),
+            None
         );
     }
 }

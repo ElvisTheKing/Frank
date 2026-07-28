@@ -17,8 +17,9 @@ RUN apt-get update \
         pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup component add clippy rustfmt \
-    && rustup target add wasm32-unknown-unknown
+RUN rustup component add clippy llvm-tools-preview rustfmt \
+    && rustup target add wasm32-unknown-unknown \
+    && cargo install cargo-llvm-cov --version 0.8.7 --locked
 
 WORKDIR /workspace
 

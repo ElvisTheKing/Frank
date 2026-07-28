@@ -539,41 +539,55 @@ fn upload_tile(
 }
 
 fn build_visible_vertices(image: &GpuImage, state: PaneRenderState) -> (Vec<Vertex>, Vec<usize>) {
-    let pane_width = state.physical_size[0].max(1.0);
-    let pane_height = state.physical_size[1].max(1.0);
-    let source_scale = state.source_pixels_per_physical_pixel.max(1.0 / 64.0);
-    let scale_x = source_scale * image.width as f32 / state.source_size[0].max(1) as f32;
-    let scale_y = source_scale * image.height as f32 / state.source_size[1].max(1) as f32;
-    let center_x = state.center[0] * image.width as f32;
-    let center_y = state.center[1] * image.height as f32;
-    let visible_left = center_x - pane_width * scale_x * 0.5;
-    let visible_top = center_y - pane_height * scale_y * 0.5;
     let mut vertices = Vec::with_capacity(image.tiles.len() * 6);
     let mut tile_indices = Vec::with_capacity(image.tiles.len());
 
     for (tile_index, tile) in image.tiles.iter().enumerate() {
-        let left_px = (tile.x as f32 - visible_left) / scale_x;
-        let top_px = (tile.y as f32 - visible_top) / scale_y;
-        let right_px = left_px + tile.width as f32 / scale_x;
-        let bottom_px = top_px + tile.height as f32 / scale_y;
-        let left = left_px / pane_width * 2.0 - 1.0;
-        let right = right_px / pane_width * 2.0 - 1.0;
-        let top = 1.0 - top_px / pane_height * 2.0;
-        let bottom = 1.0 - bottom_px / pane_height * 2.0;
-        if right < -1.0 || left > 1.0 || bottom > 1.0 || top < -1.0 {
-            continue;
+        if let Some(tile_vertices) = visible_tile_vertices(
+            [image.width, image.height],
+            [tile.x, tile.y, tile.width, tile.height],
+            state,
+        ) {
+            vertices.extend_from_slice(&tile_vertices);
+            tile_indices.push(tile_index);
         }
-        vertices.extend_from_slice(&[
-            Vertex::new(left, top, 0.0, 0.0),
-            Vertex::new(left, bottom, 0.0, 1.0),
-            Vertex::new(right, bottom, 1.0, 1.0),
-            Vertex::new(left, top, 0.0, 0.0),
-            Vertex::new(right, bottom, 1.0, 1.0),
-            Vertex::new(right, top, 1.0, 0.0),
-        ]);
-        tile_indices.push(tile_index);
     }
     (vertices, tile_indices)
+}
+
+fn visible_tile_vertices(
+    image_size: [u32; 2],
+    tile: [u32; 4],
+    state: PaneRenderState,
+) -> Option<[Vertex; 6]> {
+    let pane_width = state.physical_size[0].max(1.0);
+    let pane_height = state.physical_size[1].max(1.0);
+    let source_scale = state.source_pixels_per_physical_pixel.max(1.0 / 64.0);
+    let scale_x = source_scale * image_size[0] as f32 / state.source_size[0].max(1) as f32;
+    let scale_y = source_scale * image_size[1] as f32 / state.source_size[1].max(1) as f32;
+    let center_x = state.center[0] * image_size[0] as f32;
+    let center_y = state.center[1] * image_size[1] as f32;
+    let visible_left = center_x - pane_width * scale_x * 0.5;
+    let visible_top = center_y - pane_height * scale_y * 0.5;
+    let left_px = (tile[0] as f32 - visible_left) / scale_x;
+    let top_px = (tile[1] as f32 - visible_top) / scale_y;
+    let right_px = left_px + tile[2] as f32 / scale_x;
+    let bottom_px = top_px + tile[3] as f32 / scale_y;
+    let left = left_px / pane_width * 2.0 - 1.0;
+    let right = right_px / pane_width * 2.0 - 1.0;
+    let top = 1.0 - top_px / pane_height * 2.0;
+    let bottom = 1.0 - bottom_px / pane_height * 2.0;
+    if right < -1.0 || left > 1.0 || bottom > 1.0 || top < -1.0 {
+        return None;
+    }
+    Some([
+        Vertex::new(left, top, 0.0, 0.0),
+        Vertex::new(left, bottom, 0.0, 1.0),
+        Vertex::new(right, bottom, 1.0, 1.0),
+        Vertex::new(left, top, 0.0, 0.0),
+        Vertex::new(right, bottom, 1.0, 1.0),
+        Vertex::new(right, top, 1.0, 0.0),
+    ])
 }
 
 fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
@@ -586,7 +600,7 @@ fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgp
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct Vertex {
     position: [f32; 2],
     uv: [f32; 2],
@@ -655,6 +669,19 @@ struct DrawCommand {
 mod tests {
     use super::*;
 
+    fn pane_state(source_size: [u32; 2], physical_size: [f32; 2]) -> PaneRenderState {
+        PaneRenderState {
+            pane_id: PaneId(1),
+            image_id: ImageId(1),
+            center: [0.5, 0.5],
+            source_size,
+            source_pixels_per_physical_pixel: 1.0,
+            physical_size,
+            exposure_ev: 0.0,
+            gamma: 1.0,
+        }
+    }
+
     #[test]
     fn phase_zero_uses_portable_gpu_features_only() {
         assert!(TileRenderer::required_features().is_empty());
@@ -686,6 +713,60 @@ mod tests {
             }
             .fraction(),
             1.0
+        );
+    }
+
+    #[test]
+    fn upload_progress_reports_partial_and_complete_tile_uploads() {
+        let partial = UploadProgress {
+            uploaded_bytes: 25,
+            total_bytes: 100,
+            uploaded_tiles: 1,
+            total_tiles: 2,
+        };
+        assert!((partial.fraction() - 0.25).abs() < f32::EPSILON);
+        assert!(!partial.is_complete());
+
+        assert!(
+            UploadProgress {
+                uploaded_tiles: 2,
+                ..partial
+            }
+            .is_complete()
+        );
+    }
+
+    #[test]
+    fn full_image_tile_maps_exactly_to_the_pane() {
+        let vertices = visible_tile_vertices(
+            [100, 100],
+            [0, 0, 100, 100],
+            pane_state([100, 100], [100.0, 100.0]),
+        )
+        .expect("full image is visible");
+        assert_eq!(vertices[0], Vertex::new(-1.0, 1.0, 0.0, 0.0));
+        assert_eq!(vertices[2], Vertex::new(1.0, -1.0, 1.0, 1.0));
+        assert_eq!(vertices[5], Vertex::new(1.0, 1.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn preview_tiles_use_logical_source_dimensions_and_cull_offscreen_tiles() {
+        let preview = visible_tile_vertices(
+            [50, 50],
+            [0, 0, 50, 50],
+            pane_state([100, 100], [100.0, 100.0]),
+        )
+        .expect("scaled preview fills the logical source area");
+        assert_eq!(preview[0].position, [-1.0, 1.0]);
+        assert_eq!(preview[2].position, [1.0, -1.0]);
+
+        assert!(
+            visible_tile_vertices(
+                [1_000, 1_000],
+                [0, 0, 100, 100],
+                pane_state([1_000, 1_000], [100.0, 100.0]),
+            )
+            .is_none()
         );
     }
 }

@@ -462,6 +462,12 @@ impl Workspace {
         pane.metadata = metadata;
         if is_replacement {
             pane.viewport.center = NormalizedPoint { x: 0.5, y: 0.5 };
+            pane.note.clear();
+            pane.preview_match_ev = 0.0;
+            pane.preview_match_gamma = 1.0;
+            pane.exposure_match_ev = 0.0;
+            pane.manual_exposure_ev = 0.0;
+            pane.normalization_confidence = None;
             pane.sync_center_offset = NormalizedPoint::default();
             pane.sync_scale_ratio = 1.0;
         }
@@ -476,6 +482,11 @@ impl Workspace {
             pane.note.clear();
             pane.metadata = ImageMetadata::default();
             pane.viewport = Viewport::default();
+            pane.preview_match_ev = 0.0;
+            pane.preview_match_gamma = 1.0;
+            pane.exposure_match_ev = 0.0;
+            pane.manual_exposure_ev = 0.0;
+            pane.normalization_confidence = None;
             pane.sync_center_offset = NormalizedPoint::default();
             pane.sync_scale_ratio = 1.0;
         }
@@ -816,6 +827,45 @@ mod tests {
     }
 
     #[test]
+    fn viewport_rejects_invalid_zoom_and_clamps_navigation() {
+        let mut viewport = Viewport::default();
+        viewport.zoom_by(0.0);
+        viewport.zoom_by(f64::NAN);
+        assert_eq!(viewport.source_pixels_per_physical_pixel, 1.0);
+
+        viewport.zoom_by(f64::MAX);
+        assert_eq!(
+            viewport.source_pixels_per_physical_pixel,
+            Viewport::MIN_SCALE
+        );
+        viewport.zoom_by(f64::MIN_POSITIVE);
+        assert_eq!(
+            viewport.source_pixels_per_physical_pixel,
+            Viewport::MAX_SCALE
+        );
+
+        viewport.pan_normalized(-2.0, 2.0);
+        assert_eq!(viewport.center, NormalizedPoint { x: 1.0, y: 0.0 });
+    }
+
+    #[test]
+    fn fit_scale_updates_only_views_that_are_still_fitted() {
+        let mut fitted = Viewport::default();
+        fitted.update_fit_scale(4.0);
+        assert_eq!(fitted.fit_source_pixels_per_physical_pixel, 4.0);
+        assert_eq!(fitted.source_pixels_per_physical_pixel, 4.0);
+
+        fitted.set_one_to_one();
+        fitted.update_fit_scale(8.0);
+        assert_eq!(fitted.fit_source_pixels_per_physical_pixel, 8.0);
+        assert_eq!(fitted.source_pixels_per_physical_pixel, 1.0);
+
+        fitted.update_fit_scale(f64::NAN);
+        fitted.update_fit_scale(0.0);
+        assert_eq!(fitted.fit_source_pixels_per_physical_pixel, 8.0);
+    }
+
+    #[test]
     fn synchronized_pan_updates_only_linked_peers() {
         let mut workspace = Workspace::demo();
         workspace.panes[2].linked = false;
@@ -921,6 +971,23 @@ mod tests {
     }
 
     #[test]
+    fn title_and_display_adjustments_are_bounded_and_visible() {
+        let mut pane = Pane::placeholder(1, "candidate");
+        pane.preview_match_ev = 2.0;
+        pane.preview_match_gamma = 10.0;
+        pane.exposure_match_ev = 5.0;
+        pane.manual_exposure_ev = 4.0;
+        pane.normalization_confidence = Some(0.875);
+
+        let title = pane.formatted_title(TitleFields::default());
+        assert!(title.contains("Preview +2.00 EV γ10.00"));
+        assert!(title.contains("Normalize +5.00 EV 88%"));
+        assert!(title.contains("Manual +4.00 EV"));
+        assert_eq!(pane.display_exposure_ev(), 8.0);
+        assert_eq!(pane.display_gamma(), 4.0);
+    }
+
+    #[test]
     fn comparison_exposure_starts_neutral() {
         let pane = Pane::placeholder(1, "reference");
         assert_eq!(pane.exposure_match_ev, 0.0);
@@ -993,5 +1060,106 @@ mod tests {
             workspace.panes[0].viewport.source_pixels_per_physical_pixel,
             0.75
         );
+    }
+
+    #[test]
+    fn replacing_an_image_resets_image_specific_state() {
+        let mut workspace = Workspace::demo();
+        workspace.panes[0].note = "old image".to_owned();
+        workspace.panes[0].preview_match_ev = 1.0;
+        workspace.panes[0].preview_match_gamma = 0.6;
+        workspace.panes[0].exposure_match_ev = -1.0;
+        workspace.panes[0].manual_exposure_ev = 0.5;
+        workspace.panes[0].normalization_confidence = Some(0.9);
+
+        workspace
+            .set_image(
+                PaneId(1),
+                ImageId(10),
+                [6_000, 4_000],
+                "new image",
+                ImageMetadata::default(),
+            )
+            .expect("pane exists");
+
+        let pane = &workspace.panes[0];
+        assert!(pane.note.is_empty());
+        assert_eq!(pane.preview_match_ev, 0.0);
+        assert_eq!(pane.preview_match_gamma, 1.0);
+        assert_eq!(pane.exposure_match_ev, 0.0);
+        assert_eq!(pane.manual_exposure_ev, 0.0);
+        assert_eq!(pane.normalization_confidence, None);
+    }
+
+    #[test]
+    fn sync_scale_modes_map_different_image_dimensions() {
+        let source = Viewport {
+            source_pixels_per_physical_pixel: 2.0,
+            fit_source_pixels_per_physical_pixel: 4.0,
+            ..Viewport::default()
+        };
+        let target = Viewport {
+            fit_source_pixels_per_physical_pixel: 3.0,
+            ..Viewport::default()
+        };
+
+        assert_eq!(
+            synchronized_scale(
+                SyncMode::FitRelative,
+                source,
+                Some([4_000, 2_000]),
+                target,
+                Some([2_000, 4_000]),
+            ),
+            1.5
+        );
+        assert_eq!(
+            synchronized_scale(
+                SyncMode::WidthRelative,
+                source,
+                Some([4_000, 2_000]),
+                target,
+                Some([2_000, 4_000]),
+            ),
+            1.0
+        );
+        assert_eq!(
+            synchronized_scale(
+                SyncMode::HeightRelative,
+                source,
+                Some([4_000, 2_000]),
+                target,
+                Some([2_000, 4_000]),
+            ),
+            4.0
+        );
+        assert_eq!(
+            synchronized_scale(SyncMode::SourcePixels, source, None, target, None),
+            2.0
+        );
+        assert_eq!(
+            synchronized_scale(SyncMode::WidthRelative, source, None, target, None),
+            2.0
+        );
+    }
+
+    #[test]
+    fn unknown_pane_operations_report_errors_without_mutation() {
+        let mut workspace = Workspace::demo();
+        let original = workspace.clone();
+
+        assert_eq!(
+            workspace.set_active(PaneId(99)),
+            Err(WorkspaceError::UnknownPane(PaneId(99)))
+        );
+        assert_eq!(
+            workspace.toggle_pane_linked(PaneId(99)),
+            Err(WorkspaceError::UnknownPane(PaneId(99)))
+        );
+        assert_eq!(
+            workspace.set_pane_note(PaneId(99), "missing"),
+            Err(WorkspaceError::UnknownPane(PaneId(99)))
+        );
+        assert_eq!(workspace, original);
     }
 }

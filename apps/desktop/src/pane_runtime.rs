@@ -61,3 +61,26 @@ pub(crate) fn file_display_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .map_or_else(|| path.display().to_string(), ToOwned::to_owned)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_name_uses_only_the_file_name() {
+        assert_eq!(
+            file_display_name(Path::new("photos/session/capture.ORF")),
+            "capture.ORF"
+        );
+    }
+
+    #[test]
+    fn pane_runtime_starts_empty_without_image_state() {
+        let runtime = PaneRuntime::default();
+        assert!(runtime.image_id.is_none());
+        assert!(runtime.source_path.is_none());
+        assert!(matches!(runtime.status, PaneStatus::Empty));
+        assert!(!runtime.is_raw_source);
+        assert!(!runtime.full_raw_pending);
+    }
+}

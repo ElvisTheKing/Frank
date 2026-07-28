@@ -137,4 +137,13 @@ mod tests {
         eframe::set_value(&mut storage, PREFERENCES_KEY, &preferences);
         assert!(PersistedPreferences::load(&storage).is_none());
     }
+
+    #[test]
+    fn malformed_preferences_are_ignored() {
+        let mut storage = TestStorage::default();
+        storage
+            .0
+            .insert(PREFERENCES_KEY.to_owned(), "not valid RON".to_owned());
+        assert!(PersistedPreferences::load(&storage).is_none());
+    }
 }

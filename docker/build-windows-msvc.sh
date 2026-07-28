@@ -3,6 +3,7 @@ set -eu
 
 cargo xwin build \
     --release \
+    --locked \
     --target x86_64-pc-windows-msvc \
     -p imagecompare-desktop
 

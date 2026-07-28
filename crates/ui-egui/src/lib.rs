@@ -1075,6 +1075,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_empty_grid_has_no_rectangles() {
+        assert!(grid_rects(Rect::EVERYTHING, 0, LayoutMode::Auto).is_empty());
+    }
+
+    #[test]
     fn system_theme_falls_back_to_dark_when_unavailable() {
         let context = egui::Context::default();
         context.set_theme(AppTheme::System.egui_theme_preference());
@@ -1173,5 +1178,30 @@ mod tests {
         assert_eq!(editor.pane_id, PaneId(3));
         assert_eq!(editor.draft, "keeper");
         assert!(editor.request_focus);
+    }
+
+    #[test]
+    fn default_workspace_draws_headlessly_with_one_area_per_pane() {
+        let context = egui::Context::default();
+        let mut workspace = Workspace::demo();
+        workspace.panes[0].image_size = Some([6_000, 4_000]);
+        let mut state = UiState::default();
+        let mut result = None;
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            result = Some(draw_workspace(ui, &mut workspace, &mut state));
+        });
+
+        let output = result.expect("workspace was drawn");
+        assert_eq!(output.paint_areas.len(), workspace.panes.len());
+        assert_eq!(output.layout.panes.len(), workspace.panes.len());
+        assert!(output.layout.physical_size[0] > 0);
+        assert!(output.layout.physical_size[1] > 0);
+        assert!(
+            workspace.panes[0]
+                .viewport
+                .fit_source_pixels_per_physical_pixel
+                > 1.0
+        );
     }
 }

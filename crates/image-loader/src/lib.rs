@@ -1094,11 +1094,23 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<(), LoadError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::{io::Cursor, sync::mpsc};
 
-    use image::Rgba;
+    use image::{ExtendedColorType, ImageEncoder, Rgba, codecs::jpeg::JpegEncoder};
 
     use super::*;
+
+    fn encode_test_jpeg(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
+        let mut encoded = Cursor::new(Vec::new());
+        JpegEncoder::new_with_quality(&mut encoded, 95)
+            .write_image(rgb, width, height, ExtendedColorType::Rgb8)
+            .expect("test JPEG encodes");
+        encoded.into_inner()
+    }
+
+    fn test_jpeg_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("imagecompare-{label}-{}.jpg", std::process::id()))
+    }
 
     #[test]
     fn large_images_are_split_into_bounded_edge_tiles() {
@@ -1151,6 +1163,24 @@ mod tests {
     }
 
     #[test]
+    fn decode_budget_wait_can_be_cancelled() {
+        let budget = Arc::new(DecodeBudget::new(100));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let first = budget.acquire(100, &cancelled).expect("first permit");
+        let waiting_budget = Arc::clone(&budget);
+        let waiting_cancelled = Arc::clone(&cancelled);
+        let worker = thread::spawn(move || waiting_budget.acquire(1, &waiting_cancelled));
+
+        thread::sleep(Duration::from_millis(40));
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            worker.join().expect("worker should finish"),
+            Err(LoadError::Cancelled)
+        ));
+        drop(first);
+    }
+
+    #[test]
     fn exposure_values_are_formatted_for_compact_titles() {
         use rawler::formats::tiff::Rational;
 
@@ -1199,10 +1229,82 @@ mod tests {
     }
 
     #[test]
-    fn jpeg_exif_orientation_is_applied_before_tiling() {
-        use image::{ExtendedColorType, ImageEncoder, codecs::jpeg::JpegEncoder};
-        use std::io::Cursor;
+    fn supported_extensions_are_unique_and_include_jpeg_and_raw() {
+        let extensions = supported_extensions();
+        assert!(extensions.contains(&"jpg"));
+        assert!(extensions.contains(&"jpeg"));
+        assert!(
+            extensions
+                .iter()
+                .any(|extension| extension.eq_ignore_ascii_case("orf"))
+        );
+        let mut unique = extensions
+            .iter()
+            .map(|extension| extension.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), extensions.len());
+    }
 
+    #[test]
+    fn loader_worker_decodes_jpeg_and_holds_its_memory_reservation() {
+        let path = test_jpeg_path("worker");
+        let pixels = [
+            255, 0, 0, 0, 255, 0, //
+            0, 0, 255, 255, 255, 255,
+        ];
+        std::fs::write(&path, encode_test_jpeg(2, 2, &pixels)).expect("fixture writes");
+
+        let loader = ImageLoader::with_budget(2, 1_024);
+        let handle = loader.load(&path);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let load_result = loop {
+            match loader.try_recv() {
+                Ok(result) => break result,
+                Err(TryRecvError::Empty) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("loader did not return a result: {error}"),
+            }
+        };
+
+        assert_eq!(load_result.request_id, handle.request_id());
+        let mut decoded = load_result.result.expect("JPEG decodes");
+        assert_eq!((decoded.width, decoded.height), (2, 2));
+        assert_eq!(decoded.quality, DecodeQuality::Full);
+        assert_eq!(decoded.byte_len(), 2 * 2 * 4);
+        assert_eq!(
+            (decoded.luminance_grid.width, decoded.luminance_grid.height),
+            (2, 2)
+        );
+        let reservation = decoded
+            .take_reservation()
+            .expect("worker reserves decode memory");
+        assert_eq!(reservation.reserved_bytes(), 2 * 2 * 8);
+        assert!(decoded.take_reservation().is_none());
+
+        drop(reservation);
+        drop(handle);
+        drop(loader);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unsupported_extensions_are_rejected_before_file_access() {
+        assert!(matches!(
+            decode_image(
+                Path::new("missing.png"),
+                &AtomicBool::new(false),
+                LoadMode::Standard,
+                RawDevelopOptions::default(),
+            ),
+            Err(LoadError::UnsupportedFormat)
+        ));
+    }
+
+    #[test]
+    fn jpeg_exif_orientation_is_applied_before_tiling() {
         let mut exif = vec![
             b'I', b'I', 42, 0, 8, 0, 0, 0, // little-endian TIFF header
             1, 0, // one IFD entry
@@ -1249,6 +1351,73 @@ mod tests {
         histogram[230] = 1;
         assert!((histogram_percentile(&histogram, 4, 0.5) - 128.0 / 255.0).abs() < 1e-6);
         assert!((histogram_percentile(&histogram, 4, 0.99) - 230.0 / 255.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn display_diagnostics_and_luminance_grid_track_known_pixels() {
+        let image = RgbaImage::from_vec(
+            2,
+            2,
+            vec![
+                0, 0, 0, 255, //
+                255, 255, 255, 255, //
+                255, 0, 0, 255, //
+                0, 255, 0, 255,
+            ],
+        )
+        .expect("dimensions match pixels");
+        let diagnostics = display_diagnostics(
+            &image,
+            vec![64.0],
+            vec![4_095.0],
+            [2.0, 1.0, 1.5, f32::NAN],
+            Some([0.1; 5]),
+        );
+        assert_eq!(diagnostics.display_channel_maxima, [255, 255, 255]);
+        assert_eq!(diagnostics.display_clipped_pixels, 3);
+        assert_eq!(diagnostics.display_pixel_count, 4);
+        assert_eq!(diagnostics.linear_luminance_percentiles, Some([0.1; 5]));
+
+        let grid = build_luminance_grid(&image);
+        assert_eq!((grid.width, grid.height), (2, 2));
+        for (actual, expected) in grid.values.iter().zip([0.0, 1.0, 0.2126, 0.7152]) {
+            assert!((actual - expected).abs() < 1.0e-4);
+        }
+    }
+
+    #[test]
+    fn srgb_transfer_functions_round_trip_reference_values() {
+        for linear in [0.0_f32, 0.001, 0.003_130_8, 0.18, 0.5, 1.0] {
+            let round_trip = srgb_to_linear(linear_to_srgb(linear));
+            assert!((round_trip - linear).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn every_raw_orientation_preserves_pixels_and_expected_dimensions() {
+        let source = RgbaImage::from_fn(2, 3, |x, y| {
+            Rgba([(y * 2 + x) as u8, x as u8, y as u8, 255])
+        });
+        let mut expected_pixels = source.pixels().map(|pixel| pixel.0).collect::<Vec<_>>();
+        expected_pixels.sort_unstable();
+
+        for (orientation, expected_size) in [
+            (Orientation::Normal, (2, 3)),
+            (Orientation::Unknown, (2, 3)),
+            (Orientation::HorizontalFlip, (2, 3)),
+            (Orientation::Rotate180, (2, 3)),
+            (Orientation::VerticalFlip, (2, 3)),
+            (Orientation::Transpose, (3, 2)),
+            (Orientation::Rotate90, (3, 2)),
+            (Orientation::Transverse, (3, 2)),
+            (Orientation::Rotate270, (3, 2)),
+        ] {
+            let oriented = orient_preview(source.clone(), orientation);
+            assert_eq!(oriented.dimensions(), expected_size);
+            let mut actual_pixels = oriented.pixels().map(|pixel| pixel.0).collect::<Vec<_>>();
+            actual_pixels.sort_unstable();
+            assert_eq!(actual_pixels, expected_pixels);
+        }
     }
 
     #[test]

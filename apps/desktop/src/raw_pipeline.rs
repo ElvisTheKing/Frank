@@ -40,6 +40,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ui_raw_modes_map_to_loader_modes() {
+        assert_eq!(
+            selected_raw_mode(RawModeChoice::AsShot),
+            RawDisplayMode::AsShot
+        );
+        assert_eq!(
+            selected_raw_mode(RawModeChoice::AutoReference),
+            RawDisplayMode::Reference
+        );
+        assert_eq!(
+            selected_raw_mode(RawModeChoice::LinearDiagnostic),
+            RawDisplayMode::LinearDiagnostic
+        );
+    }
+
+    #[test]
     fn full_raw_is_requested_only_after_preview_native_resolution() {
         let preview = [3_200, 2_400];
         let source = [10_368, 7_776];
@@ -78,5 +94,31 @@ mod tests {
         assert!(raw_recipe_matches(&recipe, options));
         recipe.display_mode = RawDisplayMode::AsShot;
         assert!(!raw_recipe_matches(&recipe, options));
+    }
+
+    #[test]
+    fn raw_recipe_matching_tolerates_only_substep_ev_noise() {
+        let base = RawDevelopOptions {
+            mode: RawDisplayMode::Reference,
+            comparison_match_ev: 1.0,
+        };
+        let within_tolerance = RawDevelopOptions {
+            comparison_match_ev: 1.004,
+            ..base
+        };
+        let outside_tolerance = RawDevelopOptions {
+            comparison_match_ev: 1.01,
+            ..base
+        };
+        assert!(raw_options_match(base, within_tolerance));
+        assert!(!raw_options_match(base, outside_tolerance));
+
+        let recipe = RawRecipe {
+            display_mode: RawDisplayMode::Reference,
+            comparison_match_ev: 1.0,
+            ..RawRecipe::default()
+        };
+        assert!(raw_recipe_matches(&recipe, within_tolerance));
+        assert!(!raw_recipe_matches(&recipe, outside_tolerance));
     }
 }

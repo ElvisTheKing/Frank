@@ -6,9 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-28
+
+### Added
+
+- Expand the automated suite from 55 to 81 tests across image loading, RAW orientation, color and luminance math, viewport synchronization, render geometry, preferences, and headless UI rendering.
+- Add pinned LLVM source-coverage tooling to the Docker development environment and document the quality-check commands.
+
 ### Fixed
 
 - Use a Windows-safe temporary filename in the JPEG EXIF orientation test so release CI passes on Windows.
+- Reset all image-specific display adjustments when an image is replaced, including preview gamma.
 
 ### Changed
 
@@ -46,6 +54,7 @@ This was the first non-test tagged release, published under the ImageCompareTool
 - Limited RAW-only actions to RAW panes and kept RAW preview matching as a non-destructive GPU display adjustment.
 - Marked Windows release builds as GUI applications so they no longer open an additional console window.
 
-[Unreleased]: https://github.com/ElvisTheKing/Frank/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ElvisTheKing/Frank/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ElvisTheKing/Frank/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ElvisTheKing/Frank/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ElvisTheKing/Frank/compare/v0.1.0-test.2...v0.2.0
