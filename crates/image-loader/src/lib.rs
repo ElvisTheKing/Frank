@@ -74,18 +74,27 @@ pub struct DecodedImage {
     pub raw_diagnostics: Option<RawDiagnostics>,
     pub display_linear_luminance_percentiles: [f32; 5],
     pub luminance_grid: LuminanceGrid,
+    pub registration_image: RegistrationImage,
     pub tiles: Vec<DecodedTile>,
     pub decode_time: Duration,
     reservation: Option<DecodeReservation>,
 }
 
-pub const LUMINANCE_GRID_SIZE: usize = 64;
+pub const LUMINANCE_GRID_SIZE: usize = 256;
+pub const REGISTRATION_IMAGE_LONG_EDGE: usize = 640;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LuminanceGrid {
     pub width: usize,
     pub height: usize,
     pub values: Vec<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegistrationImage {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<u8>,
 }
 
 pub const RAW_RECIPE_VERSION: u32 = 1;
@@ -120,7 +129,7 @@ pub struct RawDevelopOptions {
 impl Default for RawDevelopOptions {
     fn default() -> Self {
         Self {
-            mode: RawDisplayMode::Reference,
+            mode: RawDisplayMode::AsShot,
             comparison_match_ev: 0.0,
         }
     }
@@ -137,7 +146,7 @@ impl Default for RawRecipe {
             comparison_match_ev: 0.0,
             tone_map: ToneMap::SrgbTransferOnly,
             highlight_method: HighlightMethod::RawlerDefault,
-            display_mode: RawDisplayMode::LinearDiagnostic,
+            display_mode: RawDisplayMode::AsShot,
         }
     }
 }
@@ -560,6 +569,7 @@ fn decode_jpeg(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImage, Load
     let (width, height) = rgba.dimensions();
     let display_linear_luminance_percentiles = display_linear_luminance_stats(&rgba);
     let luminance_grid = build_luminance_grid(&rgba);
+    let registration_image = build_registration_image(&rgba);
     let tiles = split_into_tiles(&rgba, cancelled)?;
     Ok(DecodedImage {
         path: path.to_owned(),
@@ -576,6 +586,7 @@ fn decode_jpeg(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImage, Load
         raw_diagnostics: None,
         display_linear_luminance_percentiles,
         luminance_grid,
+        registration_image,
         tiles,
         decode_time: started.elapsed(),
         reservation: None,
@@ -634,6 +645,7 @@ fn decode_raw_preview(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImag
     let (width, height) = preview.dimensions();
     let display_linear_luminance_percentiles = display_linear_luminance_stats(&preview);
     let luminance_grid = build_luminance_grid(&preview);
+    let registration_image = build_registration_image(&preview);
     let source_dimensions = raw
         .crop_area
         .or(raw.active_area)
@@ -682,6 +694,7 @@ fn decode_raw_preview(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImag
         raw_diagnostics: None,
         display_linear_luminance_percentiles,
         luminance_grid,
+        registration_image,
         tiles,
         decode_time: started.elapsed(),
         reservation: None,
@@ -758,6 +771,7 @@ fn decode_raw_full(
     );
     let display_linear_luminance_percentiles = display_linear_luminance_stats(&developed);
     let luminance_grid = build_luminance_grid(&developed);
+    let registration_image = build_registration_image(&developed);
     let (width, height) = developed.dimensions();
     let lens = metadata.lens.map(|lens| lens.lens_name);
     let camera = Some(format!("{} {}", metadata.make, metadata.model));
@@ -801,6 +815,7 @@ fn decode_raw_full(
         raw_diagnostics: Some(raw_diagnostics),
         display_linear_luminance_percentiles,
         luminance_grid,
+        registration_image,
         tiles,
         decode_time: started.elapsed(),
         reservation: None,
@@ -1002,6 +1017,67 @@ fn build_luminance_grid(image: &RgbaImage) -> LuminanceGrid {
         width: grid_width,
         height: grid_height,
         values,
+    }
+}
+
+fn build_registration_image(image: &RgbaImage) -> RegistrationImage {
+    let source_width = image.width().max(1) as usize;
+    let source_height = image.height().max(1) as usize;
+    let longest_side = source_width.max(source_height);
+    let scale = (REGISTRATION_IMAGE_LONG_EDGE as f64 / longest_side as f64).min(1.0);
+    let width = ((source_width as f64 * scale).round() as usize).max(1);
+    let height = ((source_height as f64 * scale).round() as usize).max(1);
+    let mut pixels = Vec::with_capacity(width * height);
+    let mut histogram = [0_u64; 256];
+
+    for target_y in 0..height {
+        for target_x in 0..width {
+            let source_x = ((target_x as f64 + 0.5) * source_width as f64 / width as f64 - 0.5)
+                .clamp(0.0, (source_width - 1) as f64);
+            let source_y = ((target_y as f64 + 0.5) * source_height as f64 / height as f64 - 0.5)
+                .clamp(0.0, (source_height - 1) as f64);
+            let x0 = source_x.floor() as u32;
+            let y0 = source_y.floor() as u32;
+            let x1 = (x0 + 1).min(image.width().saturating_sub(1));
+            let y1 = (y0 + 1).min(image.height().saturating_sub(1));
+            let fraction_x = (source_x - f64::from(x0)) as f32;
+            let fraction_y = (source_y - f64::from(y0)) as f32;
+            let luma = |x: u32, y: u32| {
+                let pixel = image.get_pixel(x, y);
+                0.2126 * f32::from(pixel[0])
+                    + 0.7152 * f32::from(pixel[1])
+                    + 0.0722 * f32::from(pixel[2])
+            };
+            let top = luma(x0, y0) * (1.0 - fraction_x) + luma(x1, y0) * fraction_x;
+            let bottom = luma(x0, y1) * (1.0 - fraction_x) + luma(x1, y1) * fraction_x;
+            let value = (top * (1.0 - fraction_y) + bottom * fraction_y)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            pixels.push(value);
+            histogram[usize::from(value)] += 1;
+        }
+    }
+
+    let count = pixels.len() as u64;
+    let low = (histogram_percentile(&histogram, count, 0.01) * 255.0).round() as u8;
+    let high = (histogram_percentile(&histogram, count, 0.99) * 255.0).round() as u8;
+    if high > low.saturating_add(4) {
+        let range = u16::from(high - low);
+        for pixel in &mut pixels {
+            *pixel = if *pixel <= low {
+                0
+            } else if *pixel >= high {
+                255
+            } else {
+                ((u16::from(*pixel - low) * 255 + range / 2) / range) as u8
+            };
+        }
+    }
+
+    RegistrationImage {
+        width,
+        height,
+        pixels,
     }
 }
 
@@ -1386,6 +1462,42 @@ mod tests {
     }
 
     #[test]
+    fn registration_image_is_bounded_aspect_preserving_and_contrast_stretched() {
+        let image = RgbaImage::from_fn(1_200, 600, |x, _| {
+            let value = if x < 12 {
+                10
+            } else if x >= 1_188 {
+                220
+            } else {
+                40 + ((x - 12) * 80 / 1_176) as u8
+            };
+            Rgba([value, value, value, 255])
+        });
+
+        let registration = build_registration_image(&image);
+
+        assert_eq!(
+            (registration.width, registration.height),
+            (REGISTRATION_IMAGE_LONG_EDGE, 320)
+        );
+        assert_eq!(
+            registration.pixels.len(),
+            registration.width * registration.height
+        );
+        assert_eq!(registration.pixels.iter().copied().min(), Some(0));
+        assert_eq!(registration.pixels.iter().copied().max(), Some(255));
+    }
+
+    #[test]
+    fn registration_image_does_not_upscale_small_sources() {
+        let image = RgbaImage::from_pixel(24, 16, Rgba([80, 80, 80, 255]));
+        let registration = build_registration_image(&image);
+
+        assert_eq!((registration.width, registration.height), (24, 16));
+        assert_eq!(registration.pixels, vec![80; 24 * 16]);
+    }
+
+    #[test]
     fn srgb_transfer_functions_round_trip_reference_values() {
         for linear in [0.0_f32, 0.001, 0.003_130_8, 0.18, 0.5, 1.0] {
             let round_trip = srgb_to_linear(linear_to_srgb(linear));
@@ -1430,9 +1542,9 @@ mod tests {
     }
 
     #[test]
-    fn raw_development_defaults_to_reference_mode() {
+    fn raw_development_defaults_to_neutral_base_render() {
         let options = RawDevelopOptions::default();
-        assert_eq!(options.mode, RawDisplayMode::Reference);
+        assert_eq!(options.mode, RawDisplayMode::AsShot);
         assert_eq!(options.comparison_match_ev, 0.0);
     }
 

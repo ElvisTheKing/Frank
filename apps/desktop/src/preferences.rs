@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use ui_egui::{AppTheme, RawModeChoice, UiState};
+use ui_egui::{AppTheme, UiState};
 use viewer_model::{LayoutMode, SyncMode, TitleFields, Workspace};
 
 pub(crate) const PREFERENCES_KEY: &str = "preferences-v1";
@@ -13,7 +13,7 @@ pub(crate) struct PersistedPreferences {
     clean_view: bool,
     show_pixel_grid: bool,
     develop_raws_on_load: bool,
-    raw_mode: RawModeChoice,
+    match_raw_to_preview: bool,
     sync_adjustments: bool,
     synchronized: bool,
     sync_mode: SyncMode,
@@ -29,7 +29,7 @@ impl PersistedPreferences {
             clean_view: !ui_state.show_pane_controls,
             show_pixel_grid: ui_state.show_pixel_grid,
             develop_raws_on_load: ui_state.develop_raws_on_load,
-            raw_mode: ui_state.raw_mode,
+            match_raw_to_preview: ui_state.match_raw_to_preview,
             sync_adjustments: ui_state.sync_adjustments,
             synchronized: workspace.synchronized,
             sync_mode: workspace.sync_mode,
@@ -43,7 +43,7 @@ impl PersistedPreferences {
         ui_state.show_pane_controls = !self.clean_view;
         ui_state.show_pixel_grid = self.show_pixel_grid;
         ui_state.develop_raws_on_load = self.develop_raws_on_load;
-        ui_state.raw_mode = self.raw_mode;
+        ui_state.match_raw_to_preview = self.match_raw_to_preview;
         ui_state.sync_adjustments = self.sync_adjustments;
         workspace.synchronized = self.synchronized;
         workspace.sync_mode = self.sync_mode;
@@ -103,7 +103,7 @@ mod tests {
         ui_state.show_pane_controls = false;
         ui_state.show_pixel_grid = true;
         ui_state.develop_raws_on_load = true;
-        ui_state.raw_mode = RawModeChoice::AsShot;
+        ui_state.match_raw_to_preview = false;
         ui_state.sync_adjustments = true;
 
         let expected = PersistedPreferences::capture(&workspace, &ui_state);

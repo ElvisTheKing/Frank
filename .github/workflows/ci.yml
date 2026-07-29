@@ -32,11 +32,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            package: dist/imagecompare-windows-*.zip
+            package: dist/frank-windows-*.zip
           - os: macos-latest
-            package: dist/imagecompare-macos-*.zip
+            package: dist/frank-macos-*.zip
           - os: ubuntu-24.04
-            package: dist/imagecompare-linux-*.tar.gz
+            package: dist/frank-linux-*.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,19 +75,19 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/imagecompare-windows-${{ runner.arch }} | Out-Null
-          Copy-Item target/release/imagecompare-desktop.exe dist/imagecompare-windows-${{ runner.arch }}/
-          Copy-Item LICENSE,README.md,CHANGELOG.md,COPYRIGHT dist/imagecompare-windows-${{ runner.arch }}/
-          Compress-Archive -Path dist/imagecompare-windows-${{ runner.arch }} -DestinationPath dist/imagecompare-windows-${{ runner.arch }}.zip
+          New-Item -ItemType Directory -Force dist/frank-windows-${{ runner.arch }} | Out-Null
+          Copy-Item target/release/frank.exe dist/frank-windows-${{ runner.arch }}/
+          Copy-Item LICENSE,README.md,CHANGELOG.md,COPYRIGHT dist/frank-windows-${{ runner.arch }}/
+          Compress-Archive -Path dist/frank-windows-${{ runner.arch }} -DestinationPath dist/frank-windows-${{ runner.arch }}.zip
 
       - name: Package Linux build
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          package="imagecompare-linux-${{ runner.arch }}"
+          package="frank-linux-${{ runner.arch }}"
           mkdir -p "dist/$package"
-          install -m 755 target/release/imagecompare-desktop "dist/$package/imagecompare-desktop"
+          install -m 755 target/release/frank "dist/$package/frank"
           cp LICENSE README.md CHANGELOG.md COPYRIGHT "dist/$package/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
 
@@ -98,10 +98,10 @@ jobs:
           set -euo pipefail
           app="dist/Frank.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          install -m 755 target/release/imagecompare-desktop "$app/Contents/MacOS/imagecompare-desktop"
+          install -m 755 target/release/frank "$app/Contents/MacOS/frank"
           cp packaging/macos/Info.plist "$app/Contents/Info.plist"
           cp LICENSE README.md CHANGELOG.md COPYRIGHT "$app/Contents/Resources/"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/imagecompare-macos-${{ runner.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/frank-macos-${{ runner.arch }}.zip"
 
       - name: Publish platform package
         uses: softprops/action-gh-release@v3

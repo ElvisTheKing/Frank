@@ -21,13 +21,17 @@ pub struct UiState {
     pub show_pixel_grid: bool,
     pub show_pane_controls: bool,
     pub develop_raws_on_load: bool,
+    pub match_raw_to_preview: bool,
     pub active_is_raw: bool,
-    pub raw_mode: RawModeChoice,
+    pub has_raw_images: bool,
     pub sync_adjustments: bool,
     pub theme: AppTheme,
+    pub registration_busy: bool,
+    pub registration_status: Option<String>,
     dragged_pane: Option<PaneId>,
     drop_target: Option<PaneId>,
     note_editor: Option<NoteEditor>,
+    manual_registration: Option<ManualRegistrationSession>,
 }
 
 impl Default for UiState {
@@ -36,13 +40,17 @@ impl Default for UiState {
             show_pixel_grid: false,
             show_pane_controls: true,
             develop_raws_on_load: false,
+            match_raw_to_preview: true,
             active_is_raw: false,
-            raw_mode: RawModeChoice::default(),
+            has_raw_images: false,
             sync_adjustments: false,
             theme: AppTheme::default(),
+            registration_busy: false,
+            registration_status: None,
             dragged_pane: None,
             drop_target: None,
             note_editor: None,
+            manual_registration: None,
         }
     }
 }
@@ -129,34 +137,6 @@ fn palette(theme: egui::Theme) -> UiPalette {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub enum RawModeChoice {
-    AsShot,
-    #[default]
-    AutoReference,
-    LinearDiagnostic,
-}
-
-impl RawModeChoice {
-    const ALL: [Self; 3] = [Self::AsShot, Self::AutoReference, Self::LinearDiagnostic];
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::AsShot => "As shot",
-            Self::AutoReference => "Auto reference",
-            Self::LinearDiagnostic => "Linear diagnostic",
-        }
-    }
-
-    const fn short_label(self) -> &'static str {
-        match self {
-            Self::AsShot => "As shot",
-            Self::AutoReference => "Auto",
-            Self::LinearDiagnostic => "Linear",
-        }
-    }
-}
-
 impl UiState {
     pub fn cancel_note_edit_for(&mut self, pane_id: PaneId) {
         if self
@@ -167,6 +147,88 @@ impl UiState {
             self.note_editor = None;
         }
     }
+
+    pub fn cancel_registration_for(&mut self, pane_id: PaneId) {
+        if self
+            .manual_registration
+            .as_ref()
+            .is_some_and(|registration| {
+                registration.reference_pane == pane_id || registration.target_pane == pane_id
+            })
+        {
+            self.manual_registration = None;
+        }
+    }
+
+    fn start_manual_registration(&mut self, reference_pane: PaneId, target_pane: PaneId) {
+        self.manual_registration = Some(ManualRegistrationSession {
+            reference_pane,
+            target_pane,
+            samples: Vec::with_capacity(4),
+        });
+        self.registration_status = None;
+    }
+
+    fn expected_registration_pane(&self) -> Option<PaneId> {
+        let registration = self.manual_registration.as_ref()?;
+        Some(if registration.samples.len() % 2 == 0 {
+            registration.reference_pane
+        } else {
+            registration.target_pane
+        })
+    }
+
+    fn record_registration_point(
+        &mut self,
+        pane_id: PaneId,
+        point: NormalizedPoint,
+    ) -> Option<ManualRegistrationPoints> {
+        let registration = self.manual_registration.as_mut()?;
+        let expected_pane = if registration.samples.len() % 2 == 0 {
+            registration.reference_pane
+        } else {
+            registration.target_pane
+        };
+        if expected_pane != pane_id {
+            return None;
+        }
+        registration.samples.push((pane_id, point));
+        if registration.samples.len() < 4 {
+            return None;
+        }
+        let completed = ManualRegistrationPoints {
+            reference_pane: registration.reference_pane,
+            target_pane: registration.target_pane,
+            reference_points: [registration.samples[0].1, registration.samples[2].1],
+            target_points: [registration.samples[1].1, registration.samples[3].1],
+        };
+        self.manual_registration = None;
+        Some(completed)
+    }
+}
+
+#[derive(Debug)]
+struct ManualRegistrationSession {
+    reference_pane: PaneId,
+    target_pane: PaneId,
+    samples: Vec<(PaneId, NormalizedPoint)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ManualRegistrationPoints {
+    pub reference_pane: PaneId,
+    pub target_pane: PaneId,
+    pub reference_points: [NormalizedPoint; 2],
+    pub target_points: [NormalizedPoint; 2],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegistrationRequest {
+    SetReference(PaneId),
+    Automatic(PaneId),
+    AutomaticAll,
+    Reset(PaneId),
+    ResetAll,
 }
 
 #[derive(Debug)]
@@ -186,10 +248,14 @@ pub struct UiOutput {
     pub added_panes: Vec<PaneId>,
     pub removed_panes: Vec<PaneId>,
     pub view_one_to_one_requested: bool,
-    pub raw_develop_requested: Option<RawModeChoice>,
+    pub raw_develop_requested: bool,
+    pub raw_develop_all_requested: bool,
     pub exposure_match_requested: bool,
     pub preview_match_requested: bool,
+    pub preview_match_enabled_changed: Option<bool>,
     pub exposure_match_reset_requested: bool,
+    pub registration_request: Option<RegistrationRequest>,
+    pub manual_registration_completed: Option<ManualRegistrationPoints>,
 }
 
 #[derive(Default)]
@@ -200,10 +266,14 @@ struct ToolbarOutput {
     added_panes: Vec<PaneId>,
     removed_panes: Vec<PaneId>,
     view_one_to_one_requested: bool,
-    raw_develop_requested: Option<RawModeChoice>,
+    raw_develop_requested: bool,
+    raw_develop_all_requested: bool,
     exposure_match_requested: bool,
     preview_match_requested: bool,
+    preview_match_enabled_changed: Option<bool>,
     exposure_match_reset_requested: bool,
+    registration_request: Option<RegistrationRequest>,
+    manual_registration_completed: Option<ManualRegistrationPoints>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -309,6 +379,7 @@ pub fn draw_workspace(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiStat
     for pane_id in requested_removals {
         if workspace.remove_pane(pane_id).is_ok() {
             state.cancel_note_edit_for(pane_id);
+            state.cancel_registration_for(pane_id);
             if state.dragged_pane == Some(pane_id) {
                 state.dragged_pane = None;
                 state.drop_target = None;
@@ -328,9 +399,93 @@ pub fn draw_workspace(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiStat
         removed_panes: toolbar_output.removed_panes,
         view_one_to_one_requested: toolbar_output.view_one_to_one_requested,
         raw_develop_requested: toolbar_output.raw_develop_requested,
+        raw_develop_all_requested: toolbar_output.raw_develop_all_requested,
         exposure_match_requested: toolbar_output.exposure_match_requested,
         preview_match_requested: toolbar_output.preview_match_requested,
+        preview_match_enabled_changed: toolbar_output.preview_match_enabled_changed,
         exposure_match_reset_requested: toolbar_output.exposure_match_reset_requested,
+        registration_request: toolbar_output.registration_request,
+        manual_registration_completed: toolbar_output.manual_registration_completed,
+    }
+}
+
+pub fn paint_registration_overlays(
+    ui: &Ui,
+    workspace: &Workspace,
+    state: &UiState,
+    paint_areas: &[PanePaintArea],
+) {
+    let Some(registration) = &state.manual_registration else {
+        return;
+    };
+    let expected_pane = state.expected_registration_pane();
+    for area in paint_areas {
+        if expected_pane == Some(area.pane_id) {
+            ui.painter().rect_stroke(
+                area.rect.shrink(2.0),
+                0.0,
+                Stroke::new(2.0, Color32::from_rgb(255, 188, 76)),
+                StrokeKind::Inside,
+            );
+        }
+    }
+    for (sample_index, (pane_id, point)) in registration.samples.iter().enumerate() {
+        let Some(area) = paint_areas.iter().find(|area| area.pane_id == *pane_id) else {
+            continue;
+        };
+        let Some(pane) = workspace.panes.iter().find(|pane| pane.id == *pane_id) else {
+            continue;
+        };
+        let Some([image_width, image_height]) = pane.image_size else {
+            continue;
+        };
+        let pixels_per_point = (area.physical_size[0] / area.rect.width().max(1.0)).max(0.01);
+        let offset_physical = egui::vec2(
+            ((point.x - pane.viewport.center.x) * f64::from(image_width)
+                / pane
+                    .viewport
+                    .source_pixels_per_physical_pixel
+                    .max(viewer_model::Viewport::MIN_SCALE)) as f32,
+            ((point.y - pane.viewport.center.y) * f64::from(image_height)
+                / pane
+                    .viewport
+                    .source_pixels_per_physical_pixel
+                    .max(viewer_model::Viewport::MIN_SCALE)) as f32,
+        );
+        let position = area.rect.center() + offset_physical / pixels_per_point;
+        if !area.rect.contains(position) {
+            continue;
+        }
+        let color = if *pane_id == registration.reference_pane {
+            Color32::from_rgb(92, 183, 255)
+        } else {
+            Color32::from_rgb(99, 221, 161)
+        };
+        ui.painter()
+            .circle_filled(position, 7.0, Color32::from_black_alpha(180));
+        ui.painter()
+            .circle_stroke(position, 7.0, Stroke::new(2.0, color));
+        ui.painter().line_segment(
+            [
+                position - egui::vec2(10.0, 0.0),
+                position + egui::vec2(10.0, 0.0),
+            ],
+            Stroke::new(1.0, color),
+        );
+        ui.painter().line_segment(
+            [
+                position - egui::vec2(0.0, 10.0),
+                position + egui::vec2(0.0, 10.0),
+            ],
+            Stroke::new(1.0, color),
+        );
+        ui.painter().text(
+            position + egui::vec2(10.0, -10.0),
+            Align2::LEFT_BOTTOM,
+            format!("{}", sample_index / 2 + 1),
+            FontId::monospace(11.0),
+            Color32::WHITE,
+        );
     }
 }
 
@@ -430,19 +585,186 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
             });
         });
         toolbar_group_separator(ui);
-        ui.menu_button(format!("RAW: {}", state.raw_mode.short_label()), |ui| {
-            ui.strong("Development recipe");
-            for mode in RawModeChoice::ALL {
-                ui.selectable_value(&mut state.raw_mode, mode, mode.label());
-            }
-            ui.checkbox(&mut state.develop_raws_on_load, "Develop RAWs on load");
-            ui.separator();
-            ui.add_enabled_ui(state.active_is_raw, |ui| {
-                if ui.button("Develop active RAW").clicked() {
-                    output.raw_develop_requested = Some(state.raw_mode);
+        let reference_pane = workspace.reference_pane_id();
+        let active_pane = workspace.active_pane;
+        let reference_has_image = reference_pane.is_some_and(|reference| {
+            workspace
+                .panes
+                .iter()
+                .any(|pane| pane.id == reference && pane.image_id.is_some())
+        });
+        let active_is_target = active_pane.is_some_and(|active| {
+            active != reference_pane.unwrap_or(active)
+                && workspace
+                    .panes
+                    .iter()
+                    .any(|pane| pane.id == active && pane.image_id.is_some())
+        });
+        ui.menu_button(
+            if state.registration_busy {
+                "Aligning…"
+            } else {
+                "Align"
+            },
+            |ui| {
+                if state.registration_busy {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Matching image features");
+                    });
+                    ui.separator();
+                }
+                if let Some((reference, target, sample_count)) =
+                    state.manual_registration.as_ref().map(|registration| {
+                        (
+                            registration.reference_pane,
+                            registration.target_pane,
+                            registration.samples.len(),
+                        )
+                    })
+                {
+                    let expected = if sample_count % 2 == 0 {
+                        reference
+                    } else {
+                        target
+                    };
+                    let point_number = sample_count / 2 + 1;
+                    let expected_title = workspace
+                        .panes
+                        .iter()
+                        .find(|pane| pane.id == expected)
+                        .map_or("pane", |pane| pane.title.as_str());
+                    ui.strong("Manual alignment");
+                    ui.label(format!("Click point {point_number} in {expected_title}"));
+                    ui.weak("Drag to pan or scroll to zoom before clicking.");
+                    if ui.button("Cancel manual alignment").clicked() {
+                        state.manual_registration = None;
+                        ui.close();
+                    }
+                    return;
+                }
+
+                let reference_title = reference_pane
+                    .and_then(|reference| {
+                        workspace
+                            .panes
+                            .iter()
+                            .find(|pane| pane.id == reference)
+                            .map(|pane| pane.title.as_str())
+                    })
+                    .unwrap_or("None");
+                ui.label(format!("Reference: {reference_title}"));
+                if ui
+                    .add_enabled(
+                        active_has_image && active_pane != reference_pane,
+                        egui::Button::new("Set active as reference"),
+                    )
+                    .clicked()
+                    && let Some(active) = active_pane
+                {
+                    output.registration_request = Some(RegistrationRequest::SetReference(active));
                     ui.close();
                 }
-                if ui.button("Match embedded preview").clicked() {
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        reference_has_image && active_is_target && !state.registration_busy,
+                        egui::Button::new("Auto align active to reference"),
+                    )
+                    .clicked()
+                    && let Some(active) = active_pane
+                {
+                    output.registration_request = Some(RegistrationRequest::Automatic(active));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        reference_has_image
+                            && workspace
+                                .panes
+                                .iter()
+                                .filter(|pane| pane.image_id.is_some())
+                                .count()
+                                > 1
+                            && !state.registration_busy,
+                        egui::Button::new("Auto align all to reference"),
+                    )
+                    .clicked()
+                {
+                    output.registration_request = Some(RegistrationRequest::AutomaticAll);
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        reference_has_image && active_is_target && !state.registration_busy,
+                        egui::Button::new("Manual alignment…"),
+                    )
+                    .clicked()
+                    && let (Some(reference), Some(target)) = (reference_pane, active_pane)
+                {
+                    state.start_manual_registration(reference, target);
+                    ui.close();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        active_is_target,
+                        egui::Button::new("Reset active alignment"),
+                    )
+                    .clicked()
+                    && let Some(active) = active_pane
+                {
+                    output.registration_request = Some(RegistrationRequest::Reset(active));
+                    ui.close();
+                }
+                if ui.button("Reset all alignments").clicked() {
+                    output.registration_request = Some(RegistrationRequest::ResetAll);
+                    ui.close();
+                }
+                if let Some(status) = &state.registration_status {
+                    ui.separator();
+                    ui.weak(status);
+                }
+            },
+        );
+        toolbar_group_separator(ui);
+        ui.menu_button("RAW", |ui| {
+            ui.strong("Full-resolution RAW");
+            if ui
+                .checkbox(
+                    &mut state.match_raw_to_preview,
+                    "Match embedded JPEG automatically",
+                )
+                .on_hover_text(
+                    "Apply an instant, non-destructive GPU tone match whenever a full RAW loads",
+                )
+                .changed()
+            {
+                output.preview_match_enabled_changed = Some(state.match_raw_to_preview);
+            }
+            ui.checkbox(&mut state.develop_raws_on_load, "Develop on load")
+                .on_hover_text(
+                    "Otherwise Frank develops when zoom exceeds the embedded preview detail",
+                );
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(state.active_is_raw, egui::Button::new("Develop active RAW"))
+                    .clicked()
+                {
+                    output.raw_develop_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(state.has_raw_images, egui::Button::new("Develop all RAWs"))
+                    .clicked()
+                {
+                    output.raw_develop_all_requested = true;
+                    ui.close();
+                }
+            });
+            ui.add_enabled_ui(state.active_is_raw, |ui| {
+                if state.match_raw_to_preview && ui.button("Re-match active to preview").clicked() {
                     output.preview_match_requested = true;
                     ui.close();
                 }
@@ -471,11 +793,11 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     }
                     ui.checkbox(&mut state.sync_adjustments, "Apply to linked panes");
                     ui.separator();
-                    if ui.button("Normalize panes to active").clicked() {
+                    if ui.button("Normalize visible views to reference").clicked() {
                         output.exposure_match_requested = true;
                         ui.close();
                     }
-                    if ui.button("Reset matching").clicked() {
+                    if ui.button("Clear normalization").clicked() {
                         output.exposure_match_reset_requested = true;
                         ui.close();
                     }
@@ -551,6 +873,8 @@ fn draw_pane(
         colors,
     } = geometry;
     let is_active = workspace.active_pane == Some(pane_id);
+    let reference_pane = workspace.reference_pane_id();
+    let is_reference = reference_pane == Some(pane_id);
     let title_height = if state.show_pane_controls {
         TITLE_HEIGHT
     } else {
@@ -610,6 +934,15 @@ fn draw_pane(
     let Some(pane_index) = workspace.panes.iter().position(|pane| pane.id == pane_id) else {
         return;
     };
+    let reference_metadata = reference_pane
+        .filter(|reference| *reference != pane_id)
+        .and_then(|reference| {
+            workspace
+                .panes
+                .iter()
+                .find(|pane| pane.id == reference)
+                .map(|pane| pane.metadata.clone())
+        });
     let pane = &workspace.panes[pane_index];
     let image_size = pane.image_size;
     let viewport = pane.viewport;
@@ -618,7 +951,7 @@ fn draw_pane(
     let note = pane.note.clone();
     let pane_title = pane.title.clone();
     let zoom_percent = pane.viewport.pixel_zoom_percent();
-    let formatted_title = pane.formatted_title(title_fields);
+    let formatted_title = pane.formatted_title_relative(title_fields, reference_metadata.as_ref());
     let metadata = formatted_title
         .strip_prefix(&pane_title)
         .unwrap_or(&formatted_title)
@@ -636,13 +969,33 @@ fn draw_pane(
             drag_rect.right_bottom(),
         );
         let name_rect = Rect::from_min_max(
-            drag_rect.min,
+            pos2(
+                drag_rect.left() + if is_reference { 42.0 } else { 0.0 },
+                drag_rect.top(),
+            ),
             pos2(zoom_rect.left() - 4.0, drag_rect.center().y),
         );
+        if is_reference {
+            let reference_rect = Rect::from_min_size(
+                pos2(title_rect.left() + 8.0, title_rect.top() + 6.0),
+                Vec2::new(30.0, 14.0),
+            );
+            ui.painter().rect_filled(reference_rect, 2.0, colors.active);
+            ui.painter().text(
+                reference_rect.center(),
+                Align2::CENTER_CENTER,
+                "REF",
+                FontId::monospace(9.0),
+                Color32::WHITE,
+            );
+        }
         ui.painter()
             .with_clip_rect(name_rect.shrink2(Vec2::new(8.0, 0.0)))
             .text(
-                pos2(title_rect.left() + 8.0, title_rect.top() + 13.0),
+                pos2(
+                    title_rect.left() + if is_reference { 50.0 } else { 8.0 },
+                    title_rect.top() + 13.0,
+                ),
                 Align2::LEFT_CENTER,
                 &pane_title,
                 FontId::proportional(12.0),
@@ -843,6 +1196,39 @@ fn draw_pane(
     }
     response.context_menu(|ui| {
         ui.strong(&pane_title);
+        if is_reference {
+            ui.weak("Reference pane");
+        } else if ui
+            .add_enabled(has_image, egui::Button::new("Set as reference"))
+            .clicked()
+        {
+            output.registration_request = Some(RegistrationRequest::SetReference(pane_id));
+            ui.close();
+        }
+        if !is_reference
+            && reference_pane.is_some_and(|reference| {
+                workspace
+                    .panes
+                    .iter()
+                    .any(|pane| pane.id == reference && pane.image_id.is_some())
+            })
+        {
+            if ui.button("Auto align to reference").clicked() {
+                output.registration_request = Some(RegistrationRequest::Automatic(pane_id));
+                ui.close();
+            }
+            if ui.button("Manual alignment…").clicked()
+                && let Some(reference) = reference_pane
+            {
+                state.start_manual_registration(reference, pane_id);
+                ui.close();
+            }
+            if ui.button("Reset alignment").clicked() {
+                output.registration_request = Some(RegistrationRequest::Reset(pane_id));
+                ui.close();
+            }
+        }
+        ui.separator();
         if ui.button("Open / replace image…").clicked() {
             output.replace_image_requested = Some(pane_id);
             ui.close();
@@ -906,7 +1292,25 @@ fn draw_pane(
             ui.close();
         }
     });
-    if response.clicked() || response.drag_started() {
+    let registration_expected = state.expected_registration_pane() == Some(pane_id);
+    if response.clicked()
+        && registration_expected
+        && let Some([image_width, image_height]) = image_size
+    {
+        let pointer = response.hover_pos().unwrap_or(image_rect.center());
+        let pointer_delta = (pointer - image_rect.center()) * pixels_per_point;
+        let point = NormalizedPoint {
+            x: viewport.center.x
+                + f64::from(pointer_delta.x) * viewport.source_pixels_per_physical_pixel
+                    / f64::from(image_width.max(1)),
+            y: viewport.center.y
+                + f64::from(pointer_delta.y) * viewport.source_pixels_per_physical_pixel
+                    / f64::from(image_height.max(1)),
+        }
+        .clamped();
+        output.manual_registration_completed = state.record_registration_point(pane_id, point);
+    } else if state.manual_registration.is_none() && (response.clicked() || response.drag_started())
+    {
         let _ = workspace.set_active(pane_id);
     }
     if response.dragged()
@@ -1088,6 +1492,11 @@ mod tests {
     }
 
     #[test]
+    fn raw_preview_matching_is_enabled_by_default() {
+        assert!(UiState::default().match_raw_to_preview);
+    }
+
+    #[test]
     fn four_panes_form_two_by_two_grid() {
         let panes = grid_rects(
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 800.0)),
@@ -1178,6 +1587,52 @@ mod tests {
         assert_eq!(editor.pane_id, PaneId(3));
         assert_eq!(editor.draft, "keeper");
         assert!(editor.request_focus);
+    }
+
+    #[test]
+    fn manual_registration_collects_alternating_reference_and_target_points() {
+        let mut state = UiState::default();
+        state.start_manual_registration(PaneId(1), PaneId(2));
+        assert_eq!(state.expected_registration_pane(), Some(PaneId(1)));
+
+        let reference_one = NormalizedPoint { x: 0.2, y: 0.3 };
+        let target_one = NormalizedPoint { x: 0.4, y: 0.5 };
+        let reference_two = NormalizedPoint { x: 0.7, y: 0.2 };
+        let target_two = NormalizedPoint { x: 0.8, y: 0.4 };
+        assert_eq!(
+            state.record_registration_point(PaneId(2), target_one),
+            None,
+            "a click in the wrong pane must be ignored"
+        );
+        assert_eq!(
+            state.record_registration_point(PaneId(1), reference_one),
+            None
+        );
+        assert_eq!(state.expected_registration_pane(), Some(PaneId(2)));
+        assert_eq!(state.record_registration_point(PaneId(2), target_one), None);
+        assert_eq!(
+            state.record_registration_point(PaneId(1), reference_two),
+            None
+        );
+        let completed = state
+            .record_registration_point(PaneId(2), target_two)
+            .expect("four alternating points complete registration");
+
+        assert_eq!(completed.reference_pane, PaneId(1));
+        assert_eq!(completed.target_pane, PaneId(2));
+        assert_eq!(completed.reference_points, [reference_one, reference_two]);
+        assert_eq!(completed.target_points, [target_one, target_two]);
+        assert!(state.manual_registration.is_none());
+    }
+
+    #[test]
+    fn replacing_either_manual_registration_pane_cancels_the_session() {
+        let mut state = UiState::default();
+        state.start_manual_registration(PaneId(1), PaneId(2));
+        state.cancel_registration_for(PaneId(3));
+        assert!(state.manual_registration.is_some());
+        state.cancel_registration_for(PaneId(2));
+        assert!(state.manual_registration.is_none());
     }
 
     #[test]

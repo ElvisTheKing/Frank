@@ -1,7 +1,11 @@
 FROM messense/cargo-xwin:0.23.0
 
-RUN rustup toolchain install 1.92.0 --profile minimal \
-    && rustup target add --toolchain 1.92.0 x86_64-pc-windows-msvc
+RUN rustup toolchain install 1.92.0 \
+        --profile minimal \
+        --component clippy \
+        --component rustfmt \
+        --target wasm32-unknown-unknown \
+        --target x86_64-pc-windows-msvc
 
 COPY docker/build-windows-msvc.sh /usr/local/bin/build-windows-msvc
 RUN chmod +x /usr/local/bin/build-windows-msvc

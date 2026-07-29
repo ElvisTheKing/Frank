@@ -1,13 +1,7 @@
-use image_loader::{DecodeQuality, RawDevelopOptions, RawDisplayMode, RawRecipe};
-use ui_egui::RawModeChoice;
+use image_loader::{DecodeQuality, RawDevelopOptions, RawRecipe};
 
-pub(crate) const fn selected_raw_mode(mode: RawModeChoice) -> RawDisplayMode {
-    match mode {
-        RawModeChoice::AsShot => RawDisplayMode::AsShot,
-        RawModeChoice::AutoReference => RawDisplayMode::Reference,
-        RawModeChoice::LinearDiagnostic => RawDisplayMode::LinearDiagnostic,
-    }
-}
+#[cfg(test)]
+use image_loader::RawDisplayMode;
 
 pub(crate) fn preview_detail_exhausted(
     source_pixels_per_physical_pixel: f64,
@@ -35,25 +29,17 @@ pub(crate) fn full_raw_satisfies_resolution_request(
     full_raw_pending || quality == Some(DecodeQuality::FullRaw)
 }
 
+pub(crate) fn needs_full_raw_development(
+    is_raw_source: bool,
+    full_raw_pending: bool,
+    quality: Option<DecodeQuality>,
+) -> bool {
+    is_raw_source && !full_raw_satisfies_resolution_request(full_raw_pending, quality)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ui_raw_modes_map_to_loader_modes() {
-        assert_eq!(
-            selected_raw_mode(RawModeChoice::AsShot),
-            RawDisplayMode::AsShot
-        );
-        assert_eq!(
-            selected_raw_mode(RawModeChoice::AutoReference),
-            RawDisplayMode::Reference
-        );
-        assert_eq!(
-            selected_raw_mode(RawModeChoice::LinearDiagnostic),
-            RawDisplayMode::LinearDiagnostic
-        );
-    }
 
     #[test]
     fn full_raw_is_requested_only_after_preview_native_resolution() {
@@ -74,6 +60,30 @@ mod tests {
         assert!(!full_raw_satisfies_resolution_request(false, None));
         assert!(full_raw_satisfies_resolution_request(true, None));
         assert!(full_raw_satisfies_resolution_request(
+            false,
+            Some(DecodeQuality::FullRaw)
+        ));
+    }
+
+    #[test]
+    fn develop_all_selects_only_unfinished_raw_sources() {
+        assert!(needs_full_raw_development(
+            true,
+            false,
+            Some(DecodeQuality::EmbeddedPreview)
+        ));
+        assert!(!needs_full_raw_development(
+            false,
+            false,
+            Some(DecodeQuality::Full)
+        ));
+        assert!(!needs_full_raw_development(
+            true,
+            true,
+            Some(DecodeQuality::EmbeddedPreview)
+        ));
+        assert!(!needs_full_raw_development(
+            true,
             false,
             Some(DecodeQuality::FullRaw)
         ));

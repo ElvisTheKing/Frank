@@ -1,31 +1,46 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::mpsc::{self, Receiver, Sender},
+    time::Duration,
+};
 
 use eframe::egui::{self, Align2, Color32, FontId, pos2};
-use image_loader::{
-    DecodeQuality, DecodeReservation, ImageLoader, RawDevelopOptions, RawDisplayMode,
-};
+use image_loader::{DecodeQuality, DecodeReservation, ImageLoader, RawDevelopOptions};
 use renderer_wgpu::{PaneRenderState, TileRenderer, UploadImage, UploadTile};
 use rfd::FileDialog;
-use ui_egui::{RawModeChoice, UiState};
+use ui_egui::{ManualRegistrationPoints, RegistrationRequest, UiState};
 use viewer_model::{ImageId, ImageMetadata, MAX_PANES, PaneId, Workspace};
 
 use crate::{
-    comparison::{
-        exposure_match_ev, fit_preview_curve, intersect_region, robust_region_luminance,
-        visible_normalized_region,
-    },
+    comparison::{exposure_match_ev, fit_preview_curve, visible_region_luminance},
     pane_runtime::{PaneRuntime, PaneStatus, file_display_name},
     preferences::{PREFERENCES_KEY, PersistedPreferences},
     raw_pipeline::{
-        full_raw_satisfies_resolution_request, preview_detail_exhausted, raw_options_match,
-        raw_recipe_matches, selected_raw_mode,
+        full_raw_satisfies_resolution_request, needs_full_raw_development,
+        preview_detail_exhausted, raw_options_match, raw_recipe_matches,
     },
+    registration::{AutoRegistrationEstimate, estimate_registration},
     workspace_batch::resize_workspace_for_batch,
 };
 
 const APP_NAME: &str = "Frank";
 const APP_ID: &str = "org.imagecomparetool.desktop";
 const GPU_UPLOAD_BUDGET_PER_FRAME: usize = 32 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingRegistration {
+    reference_pane: PaneId,
+    reference_image: ImageId,
+    target_image: ImageId,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AutomaticRegistrationResult {
+    target_pane: PaneId,
+    pending: PendingRegistration,
+    estimate: Option<AutoRegistrationEstimate>,
+}
 
 pub fn run() -> eframe::Result {
     let native_options = eframe::NativeOptions {
@@ -52,7 +67,10 @@ struct DesktopApp {
     loader: ImageLoader,
     renderer: TileRenderer,
     next_image_id: u64,
-    pending_preview_match: Option<PaneId>,
+    pending_preview_matches: HashSet<PaneId>,
+    registration_sender: Sender<AutomaticRegistrationResult>,
+    registration_receiver: Receiver<AutomaticRegistrationResult>,
+    pending_registrations: HashMap<PaneId, PendingRegistration>,
 }
 
 impl DesktopApp {
@@ -159,6 +177,7 @@ impl DesktopApp {
             .map_or(2, |parallelism| parallelism.get().saturating_sub(1))
             .clamp(1, 4);
         let startup_paths = std::env::args_os().skip(1).map(PathBuf::from).collect();
+        let (registration_sender, registration_receiver) = mpsc::channel();
         let mut app = Self {
             workspace,
             ui_state,
@@ -166,7 +185,10 @@ impl DesktopApp {
             loader: ImageLoader::new(worker_count),
             renderer: TileRenderer::new(render_state),
             next_image_id: 1,
-            pending_preview_match: None,
+            pending_preview_matches: HashSet::new(),
+            registration_sender,
+            registration_receiver,
+            pending_registrations: HashMap::new(),
         };
         app.open_paths(startup_paths);
         app
@@ -228,6 +250,8 @@ impl DesktopApp {
     }
 
     fn remove_pane_runtime(&mut self, pane_id: PaneId) {
+        self.cancel_automatic_registration_for(pane_id);
+        self.pending_preview_matches.remove(&pane_id);
         if let Some(mut runtime) = self.pane_runtime.remove(&pane_id) {
             runtime.handle.take();
             if let Some(image_id) = runtime.image_id.take() {
@@ -238,6 +262,7 @@ impl DesktopApp {
 
     fn close_image(&mut self, pane_id: PaneId) {
         self.ui_state.cancel_note_edit_for(pane_id);
+        self.ui_state.cancel_registration_for(pane_id);
         self.remove_pane_runtime(pane_id);
         self.pane_runtime.insert(pane_id, PaneRuntime::default());
         self.workspace
@@ -246,6 +271,9 @@ impl DesktopApp {
 
     fn open_path(&mut self, pane_id: PaneId, path: PathBuf) {
         self.ui_state.cancel_note_edit_for(pane_id);
+        self.ui_state.cancel_registration_for(pane_id);
+        self.cancel_automatic_registration_for(pane_id);
+        self.pending_preview_matches.remove(&pane_id);
         let Some(runtime) = self.pane_runtime.get_mut(&pane_id) else {
             return;
         };
@@ -269,6 +297,7 @@ impl DesktopApp {
         runtime.display_linear_stats = None;
         runtime.preview_linear_stats = None;
         runtime.luminance_grid = None;
+        runtime.registration_image = None;
         runtime.display_size = None;
         runtime.source_size = None;
         runtime.quality = None;
@@ -279,6 +308,7 @@ impl DesktopApp {
             .find(|pane| pane.id == pane_id)
         {
             pane.preview_match_ev = 0.0;
+            pane.preview_match_gamma = 1.0;
             pane.exposure_match_ev = 0.0;
             pane.manual_exposure_ev = 0.0;
             pane.normalization_confidence = None;
@@ -296,26 +326,18 @@ impl DesktopApp {
             full_raw_satisfies_resolution_request(runtime.full_raw_pending, runtime.quality)
         });
         if !already_full_or_pending {
-            self.request_raw_development(pane_id, selected_raw_mode(self.ui_state.raw_mode), 0.0);
+            self.request_raw_development(pane_id);
         }
     }
 
-    fn request_raw_development(
-        &mut self,
-        pane_id: PaneId,
-        mode: RawDisplayMode,
-        comparison_match_ev: f32,
-    ) {
+    fn request_raw_development(&mut self, pane_id: PaneId) {
         let Some(runtime) = self.pane_runtime.get_mut(&pane_id) else {
             return;
         };
         if !runtime.is_raw_source {
             return;
         }
-        let options = RawDevelopOptions {
-            mode,
-            comparison_match_ev,
-        };
+        let options = RawDevelopOptions::default();
         if runtime
             .pending_raw_options
             .is_some_and(|pending| raw_options_match(pending, options))
@@ -374,14 +396,26 @@ impl DesktopApp {
                     let lens = decoded.lens.clone();
                     let bit_depth = decoded.bit_depth;
                     let capture = decoded.capture.clone();
-                    let raw_recipe = decoded.raw_recipe.clone();
                     runtime.raw_recipe = decoded.raw_recipe.clone();
                     runtime.raw_diagnostics = decoded.raw_diagnostics.clone();
                     runtime.display_linear_stats =
                         Some(decoded.display_linear_luminance_percentiles);
                     runtime.luminance_grid = Some(decoded.luminance_grid.clone());
+                    let should_replace_registration_image =
+                        runtime.registration_image.as_ref().is_none_or(|current| {
+                            decoded.registration_image.width * decoded.registration_image.height
+                                > current.width * current.height
+                        });
+                    if should_replace_registration_image {
+                        runtime.registration_image = Some(decoded.registration_image.clone());
+                    }
                     if quality == DecodeQuality::EmbeddedPreview {
                         runtime.preview_linear_stats = runtime.display_linear_stats;
+                    } else if quality == DecodeQuality::FullRaw
+                        && self.ui_state.match_raw_to_preview
+                        && runtime.preview_linear_stats.is_some()
+                    {
+                        self.pending_preview_matches.insert(pane_id);
                     }
                     let total_bytes = decoded.byte_len();
                     let reservation = decoded.take_reservation();
@@ -416,24 +450,7 @@ impl DesktopApp {
                         focal_length: capture.focal_length,
                         quality: match quality {
                             DecodeQuality::EmbeddedPreview => Some("preview".to_owned()),
-                            DecodeQuality::FullRaw => raw_recipe.as_ref().map_or_else(
-                                || Some("full raw".to_owned()),
-                                |recipe| {
-                                    Some(format!(
-                                        "raw {:?} {:+.2} EV{}",
-                                        recipe.display_mode,
-                                        recipe.automatic_exposure_ev,
-                                        if recipe.comparison_match_ev.abs() >= 0.005 {
-                                            format!(
-                                                " · match {:+.2} EV",
-                                                recipe.comparison_match_ev
-                                            )
-                                        } else {
-                                            String::new()
-                                        }
-                                    ))
-                                },
-                            ),
+                            DecodeQuality::FullRaw => Some("full RAW".to_owned()),
                             DecodeQuality::Full => None,
                         },
                     };
@@ -473,16 +490,33 @@ impl DesktopApp {
             }
         }
         for pane_id in develop_after_load {
-            self.request_raw_development(pane_id, selected_raw_mode(self.ui_state.raw_mode), 0.0);
+            self.request_raw_development(pane_id);
         }
     }
 
-    fn request_selected_raw_mode(&mut self, mode: RawModeChoice) {
+    fn request_active_raw_development(&mut self) {
         let Some(pane_id) = self.workspace.active_pane else {
             return;
         };
-        let mode = selected_raw_mode(mode);
-        self.request_raw_development(pane_id, mode, 0.0);
+        self.request_raw_development(pane_id);
+    }
+
+    fn request_all_raw_development(&mut self) {
+        let targets = self
+            .pane_runtime
+            .iter()
+            .filter(|(_, runtime)| {
+                needs_full_raw_development(
+                    runtime.is_raw_source,
+                    runtime.full_raw_pending,
+                    runtime.quality,
+                )
+            })
+            .map(|(&pane_id, _)| pane_id)
+            .collect::<Vec<_>>();
+        for pane_id in targets {
+            self.request_raw_development(pane_id);
+        }
     }
 
     fn request_raws_past_preview_resolution(&mut self) {
@@ -512,14 +546,13 @@ impl DesktopApp {
                 .then_some(pane_id)
             })
             .collect();
-        let mode = selected_raw_mode(self.ui_state.raw_mode);
         for pane_id in requests {
-            self.request_raw_development(pane_id, mode, 0.0);
+            self.request_raw_development(pane_id);
         }
     }
 
     fn begin_exposure_match(&mut self, paint_areas: &[ui_egui::PanePaintArea]) {
-        let Some(reference) = self.workspace.active_pane else {
+        let Some(reference) = self.workspace.reference_pane_id() else {
             return;
         };
         let Some(reference_pane) = self
@@ -533,8 +566,18 @@ impl DesktopApp {
         let Some(reference_area) = paint_areas.iter().find(|area| area.pane_id == reference) else {
             return;
         };
-        let Some(reference_region) = visible_normalized_region(reference_pane, reference_area)
-        else {
+        let Some(reference_sample) = self.pane_runtime.get(&reference).and_then(|runtime| {
+            runtime.luminance_grid.as_ref().and_then(|grid| {
+                visible_region_luminance(
+                    grid,
+                    reference_pane,
+                    reference_area,
+                    reference_pane.display_gamma(),
+                    reference_pane.preview_match_ev + reference_pane.manual_exposure_ev,
+                )
+            })
+        }) else {
+            self.reset_normalization();
             return;
         };
         let mut results = Vec::new();
@@ -545,42 +588,26 @@ impl DesktopApp {
             else {
                 continue;
             };
-            let Some(target_region) = visible_normalized_region(target_pane, target_area) else {
-                continue;
-            };
-            let region = intersect_region(reference_region, target_region);
-            let reference_sample = self.pane_runtime.get(&reference).and_then(|runtime| {
-                runtime.luminance_grid.as_ref().and_then(|grid| {
-                    robust_region_luminance(
-                        grid,
-                        region,
-                        reference_pane.display_gamma(),
-                        reference_pane.preview_match_ev + reference_pane.manual_exposure_ev,
-                    )
-                })
-            });
             let target_sample = self.pane_runtime.get(&target_pane.id).and_then(|runtime| {
                 runtime.luminance_grid.as_ref().and_then(|grid| {
-                    robust_region_luminance(
+                    visible_region_luminance(
                         grid,
-                        region,
+                        target_pane,
+                        target_area,
                         target_pane.display_gamma(),
                         target_pane.preview_match_ev + target_pane.manual_exposure_ev,
                     )
                 })
             });
-            if let (
-                Some((reference_median, reference_confidence)),
-                Some((target_median, target_confidence)),
-            ) = (reference_sample, target_sample)
-            {
+            if let Some((target_median, target_confidence)) = target_sample {
                 results.push((
                     target_pane.id,
-                    exposure_match_ev(reference_median, target_median),
-                    reference_confidence.min(target_confidence),
+                    exposure_match_ev(reference_sample.0, target_median),
+                    reference_sample.1.min(target_confidence),
                 ));
             }
         }
+        self.reset_normalization();
         for (pane_id, ev, confidence) in results {
             if let Some(pane) = self
                 .workspace
@@ -594,30 +621,35 @@ impl DesktopApp {
         }
     }
 
-    fn continue_exposure_match(&mut self) {
-        let Some(pane_id) = self.pending_preview_match else {
-            return;
-        };
-        let Some(runtime) = self.pane_runtime.get(&pane_id) else {
-            self.pending_preview_match = None;
-            return;
-        };
-        if runtime.full_raw_pending {
-            return;
+    fn continue_preview_matches(&mut self) {
+        let pending = self
+            .pending_preview_matches
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for pane_id in pending {
+            let Some(runtime) = self.pane_runtime.get(&pane_id) else {
+                self.pending_preview_matches.remove(&pane_id);
+                continue;
+            };
+            if runtime.full_raw_pending {
+                continue;
+            }
+            if runtime.quality == Some(DecodeQuality::FullRaw)
+                && let (Some(preview), Some(current)) =
+                    (runtime.preview_linear_stats, runtime.display_linear_stats)
+                && let Some(pane) = self
+                    .workspace
+                    .panes
+                    .iter_mut()
+                    .find(|pane| pane.id == pane_id)
+            {
+                let (ev, gamma) = fit_preview_curve(current, preview);
+                pane.preview_match_ev = ev;
+                pane.preview_match_gamma = gamma;
+            }
+            self.pending_preview_matches.remove(&pane_id);
         }
-        if let (Some(preview), Some(current)) =
-            (runtime.preview_linear_stats, runtime.display_linear_stats)
-            && let Some(pane) = self
-                .workspace
-                .panes
-                .iter_mut()
-                .find(|pane| pane.id == pane_id)
-        {
-            let (ev, gamma) = fit_preview_curve(current, preview);
-            pane.preview_match_ev = ev;
-            pane.preview_match_gamma = gamma;
-        }
-        self.pending_preview_match = None;
     }
 
     fn match_active_raw_to_preview(&mut self) {
@@ -630,7 +662,7 @@ impl DesktopApp {
         if !runtime.is_raw_source || runtime.preview_linear_stats.is_none() {
             return;
         }
-        self.pending_preview_match = Some(pane_id);
+        self.pending_preview_matches.insert(pane_id);
         if !matches!(
             runtime.status,
             PaneStatus::Ready {
@@ -638,18 +670,275 @@ impl DesktopApp {
                 ..
             }
         ) {
-            self.request_raw_development(pane_id, RawDisplayMode::AsShot, 0.0);
+            self.request_raw_development(pane_id);
         }
     }
 
-    fn reset_exposure_match(&mut self) {
-        self.pending_preview_match = None;
+    fn set_preview_matching_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.pending_preview_matches.extend(
+                self.pane_runtime
+                    .iter()
+                    .filter(|(_, runtime)| {
+                        runtime.is_raw_source
+                            && runtime.quality == Some(DecodeQuality::FullRaw)
+                            && runtime.preview_linear_stats.is_some()
+                    })
+                    .map(|(&pane_id, _)| pane_id),
+            );
+        } else {
+            self.pending_preview_matches.clear();
+            for pane in &mut self.workspace.panes {
+                pane.preview_match_ev = 0.0;
+                pane.preview_match_gamma = 1.0;
+            }
+        }
+    }
+
+    fn reset_normalization(&mut self) {
         for pane in &mut self.workspace.panes {
             pane.exposure_match_ev = 0.0;
             pane.normalization_confidence = None;
-            pane.preview_match_ev = 0.0;
-            pane.preview_match_gamma = 1.0;
         }
+    }
+
+    fn cancel_automatic_registration_for(&mut self, pane_id: PaneId) {
+        self.pending_registrations
+            .retain(|target, pending| *target != pane_id && pending.reference_pane != pane_id);
+        self.ui_state.registration_busy = !self.pending_registrations.is_empty();
+    }
+
+    fn start_automatic_registration(&mut self, target_pane: PaneId) -> bool {
+        let Some(reference_pane) = self.workspace.reference_pane_id() else {
+            self.ui_state.registration_status = Some("Choose a reference pane first".to_owned());
+            return false;
+        };
+        if reference_pane == target_pane {
+            self.ui_state.registration_status =
+                Some("The reference pane is already the alignment anchor".to_owned());
+            return false;
+        }
+        let Some(reference_runtime) = self.pane_runtime.get(&reference_pane) else {
+            self.ui_state.registration_status =
+                Some("The reference pane has no decoded image".to_owned());
+            return false;
+        };
+        let Some(target_runtime) = self.pane_runtime.get(&target_pane) else {
+            self.ui_state.registration_status =
+                Some("The target pane has no decoded image".to_owned());
+            return false;
+        };
+        let (Some(reference_image), Some(reference_registration_image)) = (
+            reference_runtime.image_id,
+            reference_runtime.registration_image.clone(),
+        ) else {
+            self.ui_state.registration_status =
+                Some("Wait for the reference image to finish loading".to_owned());
+            return false;
+        };
+        let (Some(target_image), Some(target_registration_image)) = (
+            target_runtime.image_id,
+            target_runtime.registration_image.clone(),
+        ) else {
+            self.ui_state.registration_status =
+                Some("Wait for the target image to finish loading".to_owned());
+            return false;
+        };
+        let pending = PendingRegistration {
+            reference_pane,
+            reference_image,
+            target_image,
+        };
+        if self.pending_registrations.get(&target_pane) == Some(&pending) {
+            self.ui_state.registration_status =
+                Some(format!("Pane {} is already being aligned…", target_pane.0));
+            return false;
+        }
+
+        self.pending_registrations.insert(target_pane, pending);
+        self.ui_state.registration_busy = true;
+        self.ui_state.registration_status = Some(format!("Aligning pane {}…", target_pane.0));
+        let sender = self.registration_sender.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name(format!("registration-{}", target_pane.0))
+            .spawn(move || {
+                let estimate = estimate_registration(
+                    &reference_registration_image,
+                    &target_registration_image,
+                );
+                let _ = sender.send(AutomaticRegistrationResult {
+                    target_pane,
+                    pending,
+                    estimate,
+                });
+            });
+        if let Err(error) = spawn_result {
+            self.pending_registrations.remove(&target_pane);
+            self.ui_state.registration_busy = !self.pending_registrations.is_empty();
+            self.ui_state.registration_status = Some(format!("Could not start alignment: {error}"));
+            return false;
+        }
+        true
+    }
+
+    fn start_automatic_registration_for_all(&mut self) {
+        let reference = self.workspace.reference_pane_id();
+        let targets = self
+            .workspace
+            .panes
+            .iter()
+            .filter(|pane| Some(pane.id) != reference && pane.image_id.is_some())
+            .map(|pane| pane.id)
+            .collect::<Vec<_>>();
+        let started = targets
+            .into_iter()
+            .filter(|target| self.start_automatic_registration(*target))
+            .count();
+        if started > 0 {
+            self.ui_state.registration_status = Some(format!("Aligning {started} target pane(s)…"));
+        } else if self.ui_state.registration_status.is_none() {
+            self.ui_state.registration_status = Some("No loaded target panes to align".to_owned());
+        }
+    }
+
+    fn apply_manual_registration(&mut self, points: ManualRegistrationPoints) {
+        if self.workspace.reference_pane_id() != Some(points.reference_pane) {
+            self.ui_state.registration_status =
+                Some("Reference pane changed; manual alignment was discarded".to_owned());
+            return;
+        }
+        match self.workspace.align_pane_from_points(
+            points.reference_pane,
+            points.target_pane,
+            points.reference_points,
+            points.target_points,
+        ) {
+            Ok(outcome) => {
+                let rotation_note = if outcome.rotation_degrees.abs() >= 1.0 {
+                    format!(
+                        " · measured rotation {:+.1}° (not applied)",
+                        outcome.rotation_degrees
+                    )
+                } else {
+                    String::new()
+                };
+                self.ui_state.registration_status = Some(format!(
+                    "Pane {} aligned · scale {:.3}×{}",
+                    points.target_pane.0, outcome.scale_ratio, rotation_note
+                ));
+            }
+            Err(error) => {
+                self.ui_state.registration_status =
+                    Some(format!("Manual alignment failed: {error}"));
+            }
+        }
+    }
+
+    fn handle_registration_request(&mut self, request: RegistrationRequest) {
+        match request {
+            RegistrationRequest::SetReference(pane_id) => {
+                if let Some(previous) = self.workspace.reference_pane_id() {
+                    self.ui_state.cancel_registration_for(previous);
+                }
+                self.pending_registrations.clear();
+                self.ui_state.registration_busy = false;
+                match self.workspace.set_reference_pane(pane_id) {
+                    Ok(()) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Pane {} is now the reference", pane_id.0));
+                    }
+                    Err(error) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Could not set reference pane: {error}"));
+                    }
+                }
+            }
+            RegistrationRequest::Automatic(pane_id) => {
+                self.start_automatic_registration(pane_id);
+            }
+            RegistrationRequest::AutomaticAll => self.start_automatic_registration_for_all(),
+            RegistrationRequest::Reset(pane_id) => {
+                self.cancel_automatic_registration_for(pane_id);
+                match self.workspace.reset_pane_registration(pane_id) {
+                    Ok(()) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Pane {} alignment reset", pane_id.0));
+                    }
+                    Err(error) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Could not reset alignment: {error}"));
+                    }
+                }
+            }
+            RegistrationRequest::ResetAll => {
+                self.pending_registrations.clear();
+                self.ui_state.registration_busy = false;
+                self.workspace.reset_sync_adjustments();
+                self.ui_state.registration_status =
+                    Some("All alignment adjustments reset".to_owned());
+            }
+        }
+    }
+
+    fn process_automatic_registration_results(&mut self) {
+        while let Ok(result) = self.registration_receiver.try_recv() {
+            let Some(pending) = self.pending_registrations.get(&result.target_pane).copied() else {
+                continue;
+            };
+            if pending != result.pending {
+                continue;
+            }
+            self.pending_registrations.remove(&result.target_pane);
+            let reference_is_current = self.workspace.reference_pane_id()
+                == Some(result.pending.reference_pane)
+                && self
+                    .pane_runtime
+                    .get(&result.pending.reference_pane)
+                    .and_then(|runtime| runtime.image_id)
+                    == Some(result.pending.reference_image);
+            let target_is_current = self
+                .pane_runtime
+                .get(&result.target_pane)
+                .and_then(|runtime| runtime.image_id)
+                == Some(result.pending.target_image);
+            if !reference_is_current || !target_is_current {
+                self.ui_state.registration_status =
+                    Some("An image changed; stale alignment was discarded".to_owned());
+                continue;
+            }
+            let Some(estimate) = result.estimate else {
+                self.ui_state.registration_status = Some(format!(
+                    "Pane {} could not be aligned confidently; try manual alignment",
+                    result.target_pane.0
+                ));
+                continue;
+            };
+            match self.workspace.align_pane_from_points(
+                result.pending.reference_pane,
+                result.target_pane,
+                estimate.reference_points,
+                estimate.target_points,
+            ) {
+                Ok(_) => {
+                    self.ui_state.registration_status = Some(format!(
+                        "Pane {} aligned · {:.0}% · {}/{} inliers · {:.1}px error · scale {:.3}× · offset {:+.3}, {:+.3}",
+                        result.target_pane.0,
+                        estimate.confidence * 100.0,
+                        estimate.inliers,
+                        estimate.candidate_matches,
+                        estimate.median_error_pixels,
+                        estimate.mapping_scale,
+                        estimate.translation.x,
+                        estimate.translation.y
+                    ));
+                }
+                Err(error) => {
+                    self.ui_state.registration_status =
+                        Some(format!("Auto alignment failed: {error}"));
+                }
+            }
+        }
+        self.ui_state.registration_busy = !self.pending_registrations.is_empty();
     }
 
     fn update_uploads(&mut self) {
@@ -697,6 +986,14 @@ impl DesktopApp {
     }
 
     fn add_image_callbacks(&self, ui: &mut egui::Ui, output: &ui_egui::UiOutput) {
+        let reference_pane = self.workspace.reference_pane_id();
+        let reference_metadata = reference_pane.and_then(|reference| {
+            self.workspace
+                .panes
+                .iter()
+                .find(|pane| pane.id == reference)
+                .map(|pane| &pane.metadata)
+        });
         for area in &output.paint_areas {
             let Some(pane) = self
                 .workspace
@@ -726,7 +1023,11 @@ impl DesktopApp {
                 self.paint_status(ui, area, runtime);
             }
             if !self.ui_state.show_pane_controls && pane.image_id.is_some() {
-                let mut label = pane.formatted_title(self.workspace.title_fields);
+                let mut label =
+                    pane.formatted_title_relative(self.workspace.title_fields, reference_metadata);
+                if Some(pane.id) == reference_pane {
+                    label.insert_str(0, "REF · ");
+                }
                 if !pane.note.is_empty() {
                     label.push_str("  •  ");
                     label.push_str(&pane.note);
@@ -822,12 +1123,13 @@ impl DesktopApp {
     }
 
     fn is_busy(&self) -> bool {
-        self.pane_runtime.values().any(|runtime| {
-            matches!(
-                runtime.status,
-                PaneStatus::Decoding { .. } | PaneStatus::Uploading { .. }
-            ) || runtime.full_raw_pending
-        })
+        !self.pending_registrations.is_empty()
+            || self.pane_runtime.values().any(|runtime| {
+                matches!(
+                    runtime.status,
+                    PaneStatus::Decoding { .. } | PaneStatus::Uploading { .. }
+                ) || runtime.full_raw_pending
+            })
     }
 }
 
@@ -855,7 +1157,8 @@ impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.process_loader_results();
         self.update_uploads();
-        self.continue_exposure_match();
+        self.continue_preview_matches();
+        self.process_automatic_registration_results();
 
         let dropped_paths: Vec<_> = ui.ctx().input(|input| {
             input
@@ -872,6 +1175,10 @@ impl eframe::App for DesktopApp {
                 .get(&pane_id)
                 .is_some_and(|runtime| runtime.is_raw_source)
         });
+        self.ui_state.has_raw_images = self
+            .pane_runtime
+            .values()
+            .any(|runtime| runtime.is_raw_source);
 
         let output = ui_egui::draw_workspace(ui, &mut self.workspace, &mut self.ui_state);
         self.apply_pane_changes(&output);
@@ -881,8 +1188,11 @@ impl eframe::App for DesktopApp {
         if output.view_one_to_one_requested {
             self.request_full_raw_for_active_pane();
         }
-        if let Some(mode) = output.raw_develop_requested {
-            self.request_selected_raw_mode(mode);
+        if output.raw_develop_requested {
+            self.request_active_raw_development();
+        }
+        if output.raw_develop_all_requested {
+            self.request_all_raw_development();
         }
         if output.exposure_match_requested {
             self.begin_exposure_match(&output.paint_areas);
@@ -890,11 +1200,26 @@ impl eframe::App for DesktopApp {
         if output.preview_match_requested {
             self.match_active_raw_to_preview();
         }
+        if let Some(enabled) = output.preview_match_enabled_changed {
+            self.set_preview_matching_enabled(enabled);
+        }
         if output.exposure_match_reset_requested {
-            self.reset_exposure_match();
+            self.reset_normalization();
+        }
+        if let Some(request) = output.registration_request {
+            self.handle_registration_request(request);
+        }
+        if let Some(points) = output.manual_registration_completed {
+            self.apply_manual_registration(points);
         }
         self.request_raws_past_preview_resolution();
         self.add_image_callbacks(ui, &output);
+        ui_egui::paint_registration_overlays(
+            ui,
+            &self.workspace,
+            &self.ui_state,
+            &output.paint_areas,
+        );
         if output.open_requested {
             self.open_dialog();
         }

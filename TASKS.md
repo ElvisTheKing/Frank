@@ -16,10 +16,11 @@ This is the persistent product backlog. Performance work is resumed when an acce
 - [x] Apply a compact comparison-first visual design with clipped two-row headers and one-pixel pane separators.
 - [x] Use full RAW coordinates while showing embedded previews and develop automatically past preview-native zoom.
 - [x] Add develop-on-load, exact batch pane sizing, per-pane close controls, borderless controls hiding, and image context menus.
-- [x] Deduplicate completed/pending RAW development and allow two bounded full RAW developments concurrently.
+- [x] Develop the active RAW or all loaded RAWs while deduplicating requests and allowing two bounded full RAW developments concurrently.
 - [x] Reorganize the toolbar into workspace, navigation, processing, and presentation groups with Clean view mode.
 - [x] Provide Light, Dark, and System themes, with native system-theme detection and a Dark fallback.
 - [x] Persist versioned global UI preferences across restarts without restoring comparison sessions.
+- [x] Add a designated reference pane and highlight configured metadata values that differ from it.
 
 ## Release 1
 
@@ -56,15 +57,18 @@ Current checkpoint: four approximately 80.6 MP OM-5 ORFs open through 3200×2400
 
 ## Release 2 research
 
-- [x] Normalize RAW and JPEG panes over their shared visible region, rejecting clipped extremes and applying an instantaneous per-pane GPU exposure layer.
+- [x] Normalize RAW and JPEG panes from each pane's current registered viewport, rejecting clipped extremes and applying an instantaneous per-pane GPU exposure layer.
 - [x] Add manual per-pane GPU exposure with optional linked-pane synchronization and reset controls.
-- [x] Match a RAW rendering to its own embedded JPEG preview using a separate GPU exposure layer.
+- [x] Match a RAW rendering to its own embedded JPEG preview by default using a separate GPU exposure/tone layer.
 - [ ] Upgrade exposure matching to aligned overlapping samples after automatic registration is available.
 - [x] Add optional preview-matched full-resolution RAW rendering using a bounded global tone curve.
 - [ ] Add camera-specific baseline exposure policies only when backed by metadata documentation and fixtures.
 - [x] Add an expert linear RAW diagnostic mode.
-- [ ] Feature/point extraction and automatic pan/zoom matching.
-- [ ] Manual registration correction.
+- [x] Add bounded automatic translation/scale registration on background workers.
+- [x] Add manual two-point registration correction with persistent synchronized navigation.
+- [x] Upgrade automatic registration to multiscale binary feature descriptors, mutual matching, and robust consensus fitting.
+- [ ] Build a versioned registration-quality fixture corpus with expected transforms for supported cameras.
+- [ ] Add optional rotation registration after defining pixel-comparison and resampling behavior.
 - [ ] Basic exposure, brightness, contrast, and color adjustments.
 
 ## Release 3 research

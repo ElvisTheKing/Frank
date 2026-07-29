@@ -6,6 +6,30 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
+### Added
+
+- Add a designated reference pane with `REF` identification and `Δ` markers on differing title metadata.
+- Add manual two-point image alignment with visible point guides, scale/rotation reporting, and persistent synchronized navigation.
+- Add non-blocking automatic alignment with multiscale feature matching, robust consensus fitting, confidence rejection, and stale-result protection.
+- Add per-pane and global alignment reset controls.
+- Add a single action to develop every loaded RAW image, retaining bounded parallel decoding.
+
+### Changed
+
+- Rename the desktop executable and release packages from the development-era ImageCompareTool name to Frank.
+- Rename user-facing registration controls to the clearer Align, Auto align, and Manual alignment terms.
+- Use the designated reference pane for exposure normalization and comparison titles.
+- Replace the low-detail 64×64 alignment search with a contrast-normalized 640-pixel representation that handles large focal-length changes and reports match quality.
+- Simplify RAW controls to one normal full-resolution development path and match its embedded JPEG automatically by default.
+- Normalize each pane from its own currently visible registered viewport instead of intersecting identical source-image coordinates.
+- Increase the viewport luminance sampling grid from 64×64 to 256×256 for reliable normalization while zoomed in.
+
+### Fixed
+
+- Keep embedded-preview matching and reference normalization as independent GPU display layers, with separate controls and reset behavior.
+
 ## [0.2.2] - 2026-07-28
 
 ### Added
@@ -54,7 +78,8 @@ This was the first non-test tagged release, published under the ImageCompareTool
 - Limited RAW-only actions to RAW panes and kept RAW preview matching as a non-destructive GPU display adjustment.
 - Marked Windows release builds as GUI applications so they no longer open an additional console window.
 
-[Unreleased]: https://github.com/ElvisTheKing/Frank/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/ElvisTheKing/Frank/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ElvisTheKing/Frank/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/ElvisTheKing/Frank/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ElvisTheKing/Frank/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ElvisTheKing/Frank/compare/v0.1.0-test.2...v0.2.0

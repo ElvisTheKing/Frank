@@ -244,6 +244,8 @@ pub struct Pane {
     pub normalization_confidence: Option<f32>,
     #[serde(default)]
     pub sync_center_offset: NormalizedPoint,
+    #[serde(default = "default_center_scale")]
+    pub sync_center_scale: NormalizedPoint,
     #[serde(default = "default_one_f64")]
     pub sync_scale_ratio: f64,
 }
@@ -266,6 +268,7 @@ impl Pane {
             manual_exposure_ev: 0.0,
             normalization_confidence: None,
             sync_center_offset: NormalizedPoint::default(),
+            sync_center_scale: default_center_scale(),
             sync_scale_ratio: 1.0,
         }
     }
@@ -274,52 +277,91 @@ impl Pane {
 impl Pane {
     #[must_use]
     pub fn formatted_title(&self, fields: TitleFields) -> String {
+        self.formatted_title_relative(fields, None)
+    }
+
+    #[must_use]
+    pub fn formatted_title_relative(
+        &self,
+        fields: TitleFields,
+        reference: Option<&ImageMetadata>,
+    ) -> String {
         let mut parts = vec![self.title.clone()];
-        if fields.megapixels
-            && let Some(megapixels) = self.metadata.megapixels
-        {
-            parts.push(format!("{megapixels:.1} MP"));
-        }
-        if fields.camera
-            && let Some(camera) = &self.metadata.camera
-        {
-            parts.push(camera.clone());
-        }
-        if fields.lens
-            && let Some(lens) = &self.metadata.lens
-        {
-            parts.push(lens.clone());
-        }
-        if fields.bit_depth
-            && let Some(bit_depth) = self.metadata.bit_depth
-        {
-            parts.push(format!("{bit_depth} bit"));
-        }
-        if fields.iso
-            && let Some(iso) = self.metadata.iso
-        {
-            parts.push(format!("ISO {iso}"));
-        }
-        if fields.shutter
-            && let Some(shutter) = &self.metadata.shutter
-        {
-            parts.push(shutter.clone());
-        }
-        if fields.aperture
-            && let Some(aperture) = &self.metadata.aperture
-        {
-            parts.push(aperture.clone());
-        }
-        if fields.focal_length
-            && let Some(focal_length) = &self.metadata.focal_length
-        {
-            parts.push(focal_length.clone());
-        }
-        if fields.quality
-            && let Some(quality) = &self.metadata.quality
-        {
-            parts.push(quality.clone());
-        }
+        let mut push_metadata = |enabled: bool,
+                                 current: Option<String>,
+                                 reference_value: Option<String>,
+                                 missing_label: &'static str| {
+            if !enabled || (current.is_none() && reference_value.is_none()) {
+                return;
+            }
+            let differs = reference.is_some() && current != reference_value;
+            let text = current.unwrap_or_else(|| format!("{missing_label} —"));
+            parts.push(if differs { format!("Δ {text}") } else { text });
+        };
+        push_metadata(
+            fields.megapixels,
+            self.metadata
+                .megapixels
+                .map(|megapixels| format!("{megapixels:.1} MP")),
+            reference
+                .and_then(|metadata| metadata.megapixels)
+                .map(|megapixels| format!("{megapixels:.1} MP")),
+            "MP",
+        );
+        push_metadata(
+            fields.camera,
+            self.metadata.camera.clone(),
+            reference.and_then(|metadata| metadata.camera.clone()),
+            "Camera",
+        );
+        push_metadata(
+            fields.lens,
+            self.metadata.lens.clone(),
+            reference.and_then(|metadata| metadata.lens.clone()),
+            "Lens",
+        );
+        push_metadata(
+            fields.bit_depth,
+            self.metadata
+                .bit_depth
+                .map(|bit_depth| format!("{bit_depth} bit")),
+            reference
+                .and_then(|metadata| metadata.bit_depth)
+                .map(|bit_depth| format!("{bit_depth} bit")),
+            "Bit depth",
+        );
+        push_metadata(
+            fields.iso,
+            self.metadata.iso.map(|iso| format!("ISO {iso}")),
+            reference
+                .and_then(|metadata| metadata.iso)
+                .map(|iso| format!("ISO {iso}")),
+            "ISO",
+        );
+        push_metadata(
+            fields.shutter,
+            self.metadata.shutter.clone(),
+            reference.and_then(|metadata| metadata.shutter.clone()),
+            "Shutter",
+        );
+        push_metadata(
+            fields.aperture,
+            self.metadata.aperture.clone(),
+            reference.and_then(|metadata| metadata.aperture.clone()),
+            "Aperture",
+        );
+        push_metadata(
+            fields.focal_length,
+            self.metadata.focal_length.clone(),
+            reference.and_then(|metadata| metadata.focal_length.clone()),
+            "Focal length",
+        );
+        push_metadata(
+            fields.quality,
+            self.metadata.quality.clone(),
+            reference.and_then(|metadata| metadata.quality.clone()),
+            "Quality",
+        );
         if self.preview_match_ev.abs() >= 0.005 || (self.preview_match_gamma - 1.0).abs() >= 0.005 {
             parts.push(format!(
                 "Preview {:+.2} EV γ{:.2}",
@@ -362,10 +404,16 @@ const fn default_one_f64() -> f64 {
     1.0
 }
 
+const fn default_center_scale() -> NormalizedPoint {
+    NormalizedPoint { x: 1.0, y: 1.0 }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Workspace {
     pub panes: Vec<Pane>,
     pub active_pane: Option<PaneId>,
+    #[serde(default)]
+    pub reference_pane: Option<PaneId>,
     pub synchronized: bool,
     pub sync_mode: SyncMode,
     #[serde(default)]
@@ -382,6 +430,7 @@ impl Workspace {
                 .map(|index| Pane::placeholder(index + 1, format!("Pane {}", index + 1)))
                 .collect(),
             active_pane: Some(PaneId(1)),
+            reference_pane: Some(PaneId(1)),
             synchronized: true,
             sync_mode: SyncMode::FitRelative,
             title_fields: TitleFields::default(),
@@ -396,6 +445,29 @@ impl Workspace {
         } else {
             Err(WorkspaceError::UnknownPane(pane_id))
         }
+    }
+
+    #[must_use]
+    pub fn reference_pane_id(&self) -> Option<PaneId> {
+        self.reference_pane
+            .filter(|reference| self.panes.iter().any(|pane| pane.id == *reference))
+            .or_else(|| {
+                self.active_pane
+                    .filter(|active| self.panes.iter().any(|pane| pane.id == *active))
+            })
+            .or_else(|| self.panes.first().map(|pane| pane.id))
+    }
+
+    pub fn set_reference_pane(&mut self, pane_id: PaneId) -> Result<(), WorkspaceError> {
+        if !self.panes.iter().any(|pane| pane.id == pane_id) {
+            return Err(WorkspaceError::UnknownPane(pane_id));
+        }
+        self.reference_pane = Some(pane_id);
+        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id) {
+            pane.linked = true;
+        }
+        self.capture_sync_adjustments(pane_id);
+        Ok(())
     }
 
     pub fn add_pane(&mut self) -> Result<PaneId, WorkspaceError> {
@@ -439,6 +511,14 @@ impl Workspace {
                 .get(index.min(self.panes.len() - 1))
                 .map(|pane| pane.id);
         }
+        if self.reference_pane == Some(pane_id) {
+            self.reference_pane = self
+                .active_pane
+                .or_else(|| self.panes.first().map(|pane| pane.id));
+            if let Some(reference) = self.reference_pane {
+                self.capture_sync_adjustments(reference);
+            }
+        }
         Ok(removed)
     }
 
@@ -469,6 +549,7 @@ impl Workspace {
             pane.manual_exposure_ev = 0.0;
             pane.normalization_confidence = None;
             pane.sync_center_offset = NormalizedPoint::default();
+            pane.sync_center_scale = default_center_scale();
             pane.sync_scale_ratio = 1.0;
         }
         Ok(())
@@ -488,6 +569,7 @@ impl Workspace {
             pane.manual_exposure_ev = 0.0;
             pane.normalization_confidence = None;
             pane.sync_center_offset = NormalizedPoint::default();
+            pane.sync_center_scale = default_center_scale();
             pane.sync_scale_ratio = 1.0;
         }
     }
@@ -507,7 +589,7 @@ impl Workspace {
         pane.linked = !pane.linked;
         let linked = pane.linked;
         if linked {
-            let reference = self.active_pane.unwrap_or(pane_id);
+            let reference = self.reference_pane_id().unwrap_or(pane_id);
             self.capture_sync_adjustments(reference);
         }
         Ok(linked)
@@ -515,7 +597,7 @@ impl Workspace {
 
     pub fn set_synchronized(&mut self, synchronized: bool) {
         if synchronized && !self.synchronized {
-            let reference = self.active_pane.or_else(|| {
+            let reference = self.reference_pane_id().or_else(|| {
                 self.panes
                     .iter()
                     .find(|pane| pane.linked)
@@ -531,9 +613,10 @@ impl Workspace {
     pub fn reset_sync_adjustments(&mut self) {
         for pane in &mut self.panes {
             pane.sync_center_offset = NormalizedPoint::default();
+            pane.sync_center_scale = default_center_scale();
             pane.sync_scale_ratio = 1.0;
         }
-        if let Some(reference) = self.active_pane {
+        if let Some(reference) = self.reference_pane_id() {
             self.propagate_synchronized_view(reference);
         }
     }
@@ -548,6 +631,7 @@ impl Workspace {
         for (index, pane) in self.panes.iter_mut().enumerate() {
             if index == reference_index {
                 pane.sync_center_offset = NormalizedPoint::default();
+                pane.sync_center_scale = default_center_scale();
                 pane.sync_scale_ratio = 1.0;
                 continue;
             }
@@ -558,14 +642,151 @@ impl Workspace {
                 pane.viewport,
                 pane.image_size,
             );
+            pane.sync_center_scale = center_mapping_scale(
+                reference_viewport,
+                reference_size,
+                pane.viewport,
+                pane.image_size,
+            );
             pane.sync_center_offset = NormalizedPoint {
-                x: pane.viewport.center.x - reference_viewport.center.x,
-                y: pane.viewport.center.y - reference_viewport.center.y,
+                x: pane.viewport.center.x - reference_viewport.center.x * pane.sync_center_scale.x,
+                y: pane.viewport.center.y - reference_viewport.center.y * pane.sync_center_scale.y,
             };
             pane.sync_scale_ratio = (pane.viewport.source_pixels_per_physical_pixel
                 / base_scale.max(Viewport::MIN_SCALE))
             .clamp(1.0 / 64.0, 64.0);
         }
+    }
+
+    pub fn align_pane_from_points(
+        &mut self,
+        reference_id: PaneId,
+        target_id: PaneId,
+        reference_points: [NormalizedPoint; 2],
+        target_points: [NormalizedPoint; 2],
+    ) -> Result<RegistrationOutcome, WorkspaceError> {
+        if reference_id == target_id {
+            return Err(WorkspaceError::InvalidRegistration(
+                "reference and target panes must differ",
+            ));
+        }
+        let reference_index = self
+            .panes
+            .iter()
+            .position(|pane| pane.id == reference_id)
+            .ok_or(WorkspaceError::UnknownPane(reference_id))?;
+        let target_index = self
+            .panes
+            .iter()
+            .position(|pane| pane.id == target_id)
+            .ok_or(WorkspaceError::UnknownPane(target_id))?;
+        let reference_size = self.panes[reference_index]
+            .image_size
+            .ok_or(WorkspaceError::MissingImageSize(reference_id))?;
+        let target_size = self.panes[target_index]
+            .image_size
+            .ok_or(WorkspaceError::MissingImageSize(target_id))?;
+        let reference_viewport = self.panes[reference_index].viewport;
+
+        let reference_vector = [
+            (reference_points[1].x - reference_points[0].x) * f64::from(reference_size[0]),
+            (reference_points[1].y - reference_points[0].y) * f64::from(reference_size[1]),
+        ];
+        let target_vector = [
+            (target_points[1].x - target_points[0].x) * f64::from(target_size[0]),
+            (target_points[1].y - target_points[0].y) * f64::from(target_size[1]),
+        ];
+        let reference_distance = reference_vector[0].hypot(reference_vector[1]);
+        let target_distance = target_vector[0].hypot(target_vector[1]);
+        if reference_distance <= 1.0 || target_distance <= 1.0 {
+            return Err(WorkspaceError::InvalidRegistration(
+                "alignment points are too close together",
+            ));
+        }
+
+        let target_scale = (reference_viewport.source_pixels_per_physical_pixel * target_distance
+            / reference_distance)
+            .clamp(Viewport::MIN_SCALE, Viewport::MAX_SCALE);
+        let reference_screen_offset = [
+            (reference_points[0].x - reference_viewport.center.x) * f64::from(reference_size[0])
+                / reference_viewport
+                    .source_pixels_per_physical_pixel
+                    .max(Viewport::MIN_SCALE),
+            (reference_points[0].y - reference_viewport.center.y) * f64::from(reference_size[1])
+                / reference_viewport
+                    .source_pixels_per_physical_pixel
+                    .max(Viewport::MIN_SCALE),
+        ];
+        let target_center = NormalizedPoint {
+            x: target_points[0].x
+                - reference_screen_offset[0] * target_scale / f64::from(target_size[0].max(1)),
+            y: target_points[0].y
+                - reference_screen_offset[1] * target_scale / f64::from(target_size[1].max(1)),
+        }
+        .clamped();
+        self.panes[target_index].viewport.center = target_center;
+        self.panes[target_index]
+            .viewport
+            .source_pixels_per_physical_pixel = target_scale;
+        self.panes[target_index].linked = true;
+        self.capture_pane_registration(reference_index, target_index);
+
+        let mut rotation_degrees = (target_vector[1].atan2(target_vector[0])
+            - reference_vector[1].atan2(reference_vector[0]))
+        .to_degrees();
+        if rotation_degrees > 180.0 {
+            rotation_degrees -= 360.0;
+        } else if rotation_degrees < -180.0 {
+            rotation_degrees += 360.0;
+        }
+        Ok(RegistrationOutcome {
+            scale_ratio: target_distance / reference_distance,
+            rotation_degrees,
+        })
+    }
+
+    pub fn reset_pane_registration(&mut self, pane_id: PaneId) -> Result<(), WorkspaceError> {
+        let pane = self
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == pane_id)
+            .ok_or(WorkspaceError::UnknownPane(pane_id))?;
+        pane.sync_center_offset = NormalizedPoint::default();
+        pane.sync_center_scale = default_center_scale();
+        pane.sync_scale_ratio = 1.0;
+        if let Some(reference) = self.reference_pane_id() {
+            self.propagate_synchronized_view(reference);
+        }
+        Ok(())
+    }
+
+    fn capture_pane_registration(&mut self, reference_index: usize, target_index: usize) {
+        let reference_viewport = self.panes[reference_index].viewport;
+        let reference_size = self.panes[reference_index].image_size;
+        let target_viewport = self.panes[target_index].viewport;
+        let target_size = self.panes[target_index].image_size;
+        let base_scale = synchronized_scale(
+            self.sync_mode,
+            reference_viewport,
+            reference_size,
+            target_viewport,
+            target_size,
+        );
+        let center_scale = center_mapping_scale(
+            reference_viewport,
+            reference_size,
+            target_viewport,
+            target_size,
+        );
+        let target = &mut self.panes[target_index];
+        target.sync_center_scale = center_scale;
+        target.sync_center_offset = NormalizedPoint {
+            x: target_viewport.center.x - reference_viewport.center.x * center_scale.x,
+            y: target_viewport.center.y - reference_viewport.center.y * center_scale.y,
+        };
+        target.sync_scale_ratio = (target_viewport.source_pixels_per_physical_pixel
+            / base_scale.max(Viewport::MIN_SCALE))
+        .clamp(1.0 / 64.0, 64.0);
     }
 
     pub fn set_pane_note(
@@ -630,21 +851,23 @@ impl Workspace {
             return;
         };
 
-        let source_adjustment = self
+        let (source_adjustment, source_center_scale) = self
             .panes
             .iter()
             .find(|pane| pane.id == pane_id)
-            .map(|pane| pane.sync_center_offset)
-            .unwrap_or_default();
+            .map(|pane| (pane.sync_center_offset, pane.sync_center_scale))
+            .unwrap_or((NormalizedPoint::default(), default_center_scale()));
         let canonical_center = NormalizedPoint {
-            x: source_viewport.center.x - source_adjustment.x,
-            y: source_viewport.center.y - source_adjustment.y,
+            x: (source_viewport.center.x - source_adjustment.x)
+                / source_center_scale.x.max(f64::EPSILON),
+            y: (source_viewport.center.y - source_adjustment.y)
+                / source_center_scale.y.max(f64::EPSILON),
         };
         for pane in &mut self.panes {
             if pane.id != pane_id && pane.linked {
                 pane.viewport.center = NormalizedPoint {
-                    x: canonical_center.x + pane.sync_center_offset.x,
-                    y: canonical_center.y + pane.sync_center_offset.y,
+                    x: canonical_center.x * pane.sync_center_scale.x + pane.sync_center_offset.x,
+                    y: canonical_center.y * pane.sync_center_scale.y + pane.sync_center_offset.y,
                 }
                 .clamped();
             }
@@ -670,13 +893,16 @@ impl Workspace {
         let source_viewport = self.panes[source_index].viewport;
         let source_size = self.panes[source_index].image_size;
         let source_offset = self.panes[source_index].sync_center_offset;
+        let source_center_scale = self.panes[source_index].sync_center_scale;
         let source_ratio = self.panes[source_index]
             .sync_scale_ratio
             .max(Viewport::MIN_SCALE);
         let canonical_viewport = Viewport {
             center: NormalizedPoint {
-                x: source_viewport.center.x - source_offset.x,
-                y: source_viewport.center.y - source_offset.y,
+                x: (source_viewport.center.x - source_offset.x)
+                    / source_center_scale.x.max(f64::EPSILON),
+                y: (source_viewport.center.y - source_offset.y)
+                    / source_center_scale.y.max(f64::EPSILON),
             },
             source_pixels_per_physical_pixel: source_viewport.source_pixels_per_physical_pixel
                 / source_ratio,
@@ -688,8 +914,10 @@ impl Workspace {
                 continue;
             }
             pane.viewport.center = NormalizedPoint {
-                x: canonical_viewport.center.x + pane.sync_center_offset.x,
-                y: canonical_viewport.center.y + pane.sync_center_offset.y,
+                x: canonical_viewport.center.x * pane.sync_center_scale.x
+                    + pane.sync_center_offset.x,
+                y: canonical_viewport.center.y * pane.sync_center_scale.y
+                    + pane.sync_center_offset.y,
             }
             .clamped();
             let synchronized_scale = synchronized_scale(
@@ -702,6 +930,31 @@ impl Workspace {
             pane.viewport.source_pixels_per_physical_pixel =
                 synchronized_scale.clamp(Viewport::MIN_SCALE, Viewport::MAX_SCALE);
         }
+    }
+}
+
+fn center_mapping_scale(
+    reference_viewport: Viewport,
+    reference_size: Option<[u32; 2]>,
+    target_viewport: Viewport,
+    target_size: Option<[u32; 2]>,
+) -> NormalizedPoint {
+    match (reference_size, target_size) {
+        (Some([reference_width, reference_height]), Some([target_width, target_height])) => {
+            let viewport_scale_ratio = target_viewport.source_pixels_per_physical_pixel
+                / reference_viewport
+                    .source_pixels_per_physical_pixel
+                    .max(Viewport::MIN_SCALE);
+            NormalizedPoint {
+                x: (viewport_scale_ratio * f64::from(reference_width)
+                    / f64::from(target_width.max(1)))
+                .clamp(1.0 / 64.0, 64.0),
+                y: (viewport_scale_ratio * f64::from(reference_height)
+                    / f64::from(target_height.max(1)))
+                .clamp(1.0 / 64.0, 64.0),
+            }
+        }
+        _ => default_center_scale(),
     }
 }
 
@@ -735,6 +988,12 @@ fn synchronized_scale(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegistrationOutcome {
+    pub scale_ratio: f64,
+    pub rotation_degrees: f64,
+}
+
 #[derive(Debug, Error, PartialEq)]
 pub enum WorkspaceError {
     #[error("unknown pane {0:?}")]
@@ -747,6 +1006,10 @@ pub enum WorkspaceError {
         maximum: usize,
         current: usize,
     },
+    #[error("pane {0:?} has no image dimensions")]
+    MissingImageSize(PaneId),
+    #[error("invalid alignment: {0}")]
+    InvalidRegistration(&'static str),
 }
 
 #[cfg(test)]
@@ -971,6 +1234,32 @@ mod tests {
     }
 
     #[test]
+    fn title_metadata_marks_only_values_that_differ_from_reference() {
+        let reference = ImageMetadata {
+            camera: Some("OM-5".to_owned()),
+            iso: Some(200),
+            shutter: Some("1/500 s".to_owned()),
+            aperture: Some("f/4.0".to_owned()),
+            ..ImageMetadata::default()
+        };
+        let mut target = Pane::placeholder(2, "candidate.ORF");
+        target.metadata = ImageMetadata {
+            camera: Some("OM-5".to_owned()),
+            iso: Some(800),
+            shutter: None,
+            aperture: Some("f/4.0".to_owned()),
+            ..ImageMetadata::default()
+        };
+
+        let title = target.formatted_title_relative(TitleFields::default(), Some(&reference));
+        assert!(title.contains("OM-5"));
+        assert!(!title.contains("Δ OM-5"));
+        assert!(title.contains("Δ ISO 800"));
+        assert!(title.contains("Δ Shutter —"));
+        assert!(!title.contains("Δ f/4.0"));
+    }
+
+    #[test]
     fn title_and_display_adjustments_are_bounded_and_visible() {
         let mut pane = Pane::placeholder(1, "candidate");
         pane.preview_match_ev = 2.0;
@@ -1141,6 +1430,118 @@ mod tests {
             synchronized_scale(SyncMode::WidthRelative, source, None, target, None),
             2.0
         );
+    }
+
+    #[test]
+    fn manual_two_point_registration_persists_during_synchronized_navigation() {
+        let mut workspace = Workspace::demo();
+        workspace.sync_mode = SyncMode::SourcePixels;
+        workspace
+            .set_image(
+                PaneId(1),
+                ImageId(1),
+                [4_000, 3_000],
+                "reference",
+                ImageMetadata::default(),
+            )
+            .expect("reference pane exists");
+        workspace
+            .set_image(
+                PaneId(2),
+                ImageId(2),
+                [6_000, 4_000],
+                "target",
+                ImageMetadata::default(),
+            )
+            .expect("target pane exists");
+        workspace.panes[0].viewport.source_pixels_per_physical_pixel = 2.0;
+
+        let outcome = workspace
+            .align_pane_from_points(
+                PaneId(1),
+                PaneId(2),
+                [
+                    NormalizedPoint { x: 0.25, y: 0.25 },
+                    NormalizedPoint { x: 0.75, y: 0.25 },
+                ],
+                [
+                    NormalizedPoint { x: 0.20, y: 0.30 },
+                    NormalizedPoint { x: 0.80, y: 0.30 },
+                ],
+            )
+            .expect("valid registration");
+
+        assert!((outcome.scale_ratio - 1.8).abs() < 1.0e-9);
+        assert!(outcome.rotation_degrees.abs() < 1.0e-9);
+        assert!(
+            (workspace.panes[1].viewport.source_pixels_per_physical_pixel - 3.6).abs() < 1.0e-9
+        );
+        assert!((workspace.panes[1].viewport.center.x - 0.5).abs() < 1.0e-9);
+        assert!((workspace.panes[1].viewport.center.y - 0.6375).abs() < 1.0e-9);
+
+        workspace.pan_pane(PaneId(1), 0.05, 0.02);
+        assert!((workspace.panes[1].viewport.center.x - 0.44).abs() < 1.0e-9);
+        assert!((workspace.panes[1].viewport.center.y - 0.6105).abs() < 1.0e-9);
+
+        let zoom_anchor = workspace.panes[0].viewport.center;
+        workspace.zoom_pane(PaneId(1), 2.0, zoom_anchor);
+        assert!(
+            (workspace.panes[1].viewport.source_pixels_per_physical_pixel - 1.8).abs() < 1.0e-9
+        );
+
+        workspace.pan_pane(PaneId(2), 0.02, -0.01);
+        let target = &workspace.panes[1];
+        assert!(
+            (target.viewport.center.x
+                - (workspace.panes[0].viewport.center.x * target.sync_center_scale.x
+                    + target.sync_center_offset.x))
+                .abs()
+                < 1.0e-9
+        );
+        assert!(
+            (target.viewport.center.y
+                - (workspace.panes[0].viewport.center.y * target.sync_center_scale.y
+                    + target.sync_center_offset.y))
+                .abs()
+                < 1.0e-9
+        );
+
+        let target_anchor = workspace.panes[1].viewport.center;
+        workspace.zoom_pane(PaneId(2), 1.5, target_anchor);
+        assert!(
+            (workspace.panes[1].viewport.source_pixels_per_physical_pixel
+                / workspace.panes[0].viewport.source_pixels_per_physical_pixel
+                - 1.8)
+                .abs()
+                < 1.0e-9
+        );
+    }
+
+    #[test]
+    fn manual_registration_rejects_coincident_points() {
+        let mut workspace = Workspace::demo();
+        workspace.panes[0].image_size = Some([4_000, 3_000]);
+        workspace.panes[1].image_size = Some([4_000, 3_000]);
+        let point = NormalizedPoint { x: 0.5, y: 0.5 };
+
+        assert_eq!(
+            workspace.align_pane_from_points(PaneId(1), PaneId(2), [point, point], [point, point],),
+            Err(WorkspaceError::InvalidRegistration(
+                "alignment points are too close together"
+            ))
+        );
+    }
+
+    #[test]
+    fn removing_reference_selects_a_valid_replacement() {
+        let mut workspace = Workspace::demo();
+        workspace
+            .set_reference_pane(PaneId(2))
+            .expect("pane exists");
+        workspace.set_active(PaneId(3)).expect("pane exists");
+        workspace.remove_pane(PaneId(2)).expect("above minimum");
+
+        assert_eq!(workspace.reference_pane_id(), Some(PaneId(3)));
     }
 
     #[test]

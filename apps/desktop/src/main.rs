@@ -9,6 +9,7 @@ mod comparison;
 mod pane_runtime;
 mod preferences;
 mod raw_pipeline;
+mod registration;
 mod workspace_batch;
 
 fn main() -> eframe::Result {

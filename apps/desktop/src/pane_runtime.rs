@@ -5,7 +5,7 @@ use std::{
 
 use image_loader::{
     DecodeQuality, DecodeReservation, LoadHandle, LuminanceGrid, RawDevelopOptions, RawDiagnostics,
-    RawRecipe,
+    RawRecipe, RegistrationImage,
 };
 use viewer_model::ImageId;
 
@@ -24,6 +24,7 @@ pub(crate) struct PaneRuntime {
     pub(crate) display_linear_stats: Option<[f32; 5]>,
     pub(crate) preview_linear_stats: Option<[f32; 5]>,
     pub(crate) luminance_grid: Option<LuminanceGrid>,
+    pub(crate) registration_image: Option<RegistrationImage>,
     pub(crate) display_size: Option<[u32; 2]>,
     pub(crate) source_size: Option<[u32; 2]>,
     pub(crate) quality: Option<DecodeQuality>,

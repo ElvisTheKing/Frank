@@ -1,5 +1,7 @@
 # RAW development research and proposed display contract
 
+> Implementation update, 2026-07-29: Frank now uses one normal full-resolution RAW base render and applies an embedded-JPEG exposure/tone match as a separate, non-destructive GPU layer by default. Reference normalization remains independent and samples each pane's current visible registered viewport.
+
 Status: design proposal, 2026-07-12. No rendering behavior is changed by this document.
 
 ## Problem observed

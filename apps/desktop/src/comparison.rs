@@ -22,15 +22,6 @@ pub(crate) fn visible_normalized_region(
     ])
 }
 
-pub(crate) fn intersect_region(left: [f32; 4], right: [f32; 4]) -> [f32; 4] {
-    [
-        left[0].max(right[0]),
-        left[1].max(right[1]),
-        left[2].min(right[2]),
-        left[3].min(right[3]),
-    ]
-}
-
 pub(crate) fn robust_region_luminance(
     grid: &LuminanceGrid,
     region: [f32; 4],
@@ -68,6 +59,21 @@ pub(crate) fn robust_region_luminance(
     let usable_ratio = values.len() as f32 / region_cells.max(1) as f32;
     let sample_confidence = (values.len() as f32 / 64.0).min(1.0);
     Some((median, usable_ratio * sample_confidence))
+}
+
+pub(crate) fn visible_region_luminance(
+    grid: &LuminanceGrid,
+    pane: &viewer_model::Pane,
+    area: &ui_egui::PanePaintArea,
+    gamma: f32,
+    exposure_ev: f32,
+) -> Option<(f32, f32)> {
+    robust_region_luminance(
+        grid,
+        visible_normalized_region(pane, area)?,
+        gamma,
+        exposure_ev,
+    )
 }
 
 pub(crate) fn fit_preview_curve(source: [f32; 5], target: [f32; 5]) -> (f32, f32) {
@@ -141,14 +147,6 @@ mod tests {
     }
 
     #[test]
-    fn normalized_region_intersection_uses_shared_area() {
-        assert_eq!(
-            intersect_region([0.0, 0.1, 0.8, 1.0], [0.2, 0.0, 1.0, 0.7]),
-            [0.2, 0.1, 0.8, 0.7]
-        );
-    }
-
-    #[test]
     fn visible_region_uses_viewport_scale_and_clamps_to_image_edges() {
         let mut pane = viewer_model::Pane::placeholder(1, "candidate");
         let area = ui_egui::PanePaintArea {
@@ -164,6 +162,35 @@ mod tests {
         for (actual, expected) in region.into_iter().zip([0.0, 0.8, 0.2, 1.0]) {
             assert!((actual - expected).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn registered_panes_sample_their_own_visible_image_regions() {
+        let grid = LuminanceGrid {
+            width: 20,
+            height: 10,
+            values: (0..10)
+                .flat_map(|_| (0..20).map(|x| if x < 10 { 0.1 } else { 0.4 }))
+                .collect(),
+        };
+        let area = ui_egui::PanePaintArea {
+            pane_id: viewer_model::PaneId(1),
+            rect: egui::Rect::NOTHING,
+            physical_size: [400.0, 200.0],
+        };
+        let mut reference = viewer_model::Pane::placeholder(1, "reference");
+        reference.image_size = Some([1_000, 500]);
+        reference.viewport.center = viewer_model::NormalizedPoint { x: 0.25, y: 0.5 };
+        let mut target = viewer_model::Pane::placeholder(2, "target");
+        target.image_size = Some([1_000, 500]);
+        target.viewport.center = viewer_model::NormalizedPoint { x: 0.75, y: 0.5 };
+
+        let reference_sample =
+            visible_region_luminance(&grid, &reference, &area, 1.0, 0.0).unwrap();
+        let target_sample = visible_region_luminance(&grid, &target, &area, 1.0, 0.0).unwrap();
+
+        assert!((reference_sample.0 - 0.1).abs() < 1.0e-6);
+        assert!((target_sample.0 - 0.4).abs() < 1.0e-6);
     }
 
     #[test]
