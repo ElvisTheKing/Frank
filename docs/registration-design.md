@@ -2,7 +2,7 @@
 
 ## Scope
 
-Frank uses one loaded pane as the comparison reference. The reference is identified by a `REF` badge and can be changed from the Align menu or an image context menu. The interface uses “alignment” and “Auto align”; “registration” remains the technical name for the underlying mapping.
+Frank uses one loaded pane as the comparison reference. Every loaded pane has a clickable `REF` control; the selected reference keeps a blue image border in both normal and Clean views. The active pane can also become the reference with `R`, the Align menu, or an image context menu. The interface uses “alignment” and “Auto align”; “registration” remains the technical name for the underlying mapping.
 
 The first alignment release supports:
 
@@ -61,7 +61,9 @@ The matcher:
 
 Only translation and uniform scale are applied by the current viewport model. A small fitted rotation is reported as part of registration diagnostics but is not resampled into the displayed image. Large rotations are rejected. The scale search supports substantial focal-length changes; acceptance is driven by feature consensus rather than a fixed overlap window.
 
-Automatic results carry the source image identities, and results are discarded if either pane was replaced while matching. The status line reports confidence, inlier count, median geometric error, scale, and center offset so weak results are visible rather than silently trusted.
+Automatic results carry the source image identities, and results are discarded if either pane was replaced while matching. Successful and rejected results retain structured quality diagnostics: feature counts, candidate matches, geometric inliers, confidence, median error, and a stable failure-reason code. The Align menu presents the latest result instead of silently accepting or rejecting it.
+
+An optional diagnostic overlay draws up to 64 corresponding match pairs over the reference and target images. Accepted geometric inliers are green and rejected descriptor candidates are orange. The overlay is deliberately opt-in because its cross-pane guide lines are intended for matcher diagnosis rather than ordinary comparison.
 
 ## Acceptance checks
 
@@ -70,6 +72,8 @@ Automatic results carry the source image identities, and results are discarded i
 - Registered centers and zoom ratios remain aligned when navigation starts in either linked pane.
 - Flat images do not return an automatic match.
 - Synthetic translated/scaled/exposure-shifted patterns are recovered within bounded error, including a 2.3× focal-length difference.
+- A versioned transform corpus exercises multiple translations, focal-length changes, and exposure differences with explicit error and confidence tolerances.
 - An unrelated textured image does not return a false registration.
+- Rejected results report a specific failure category and preserve the available match statistics.
 - Automatic matching never blocks the interface and stale results cannot alter a replaced image.
 - Reset active affects only that target; reset all removes every registration adjustment.

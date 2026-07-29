@@ -90,6 +90,8 @@ impl UploadProgress {
 #[derive(Clone, Copy, Debug)]
 pub struct PaneRenderState {
     pub pane_id: PaneId,
+    /// Distinguishes multiple independently prepared renders in one pane.
+    pub render_slot: u8,
     pub image_id: ImageId,
     pub center: [f32; 2],
     /// Logical source dimensions. An embedded preview is stretched across this
@@ -97,6 +99,8 @@ pub struct PaneRenderState {
     pub source_size: [u32; 2],
     pub source_pixels_per_physical_pixel: f32,
     pub physical_size: [f32; 2],
+    /// Visible region in physical pane pixels: `[left, top, right, bottom]`.
+    pub clip_rect: [f32; 4],
     pub exposure_ev: f32,
     pub gamma: f32,
 }
@@ -259,7 +263,7 @@ struct ImageRenderResources {
     linear_sampler: wgpu::Sampler,
     nearest_sampler: wgpu::Sampler,
     images: HashMap<ImageId, GpuImage>,
-    panes: HashMap<PaneId, PaneGpu>,
+    panes: HashMap<(PaneId, u8), PaneGpu>,
 }
 
 impl ImageRenderResources {
@@ -375,21 +379,24 @@ impl ImageRenderResources {
         };
         let (vertices, tile_indices) = build_visible_vertices(image, state);
         let required_size = (vertices.len().max(1) * size_of::<Vertex>()) as wgpu::BufferAddress;
-        let pane = self.panes.entry(state.pane_id).or_insert_with(|| {
-            let adjustment_buffer = create_adjustment_buffer(device);
-            let adjustment_bind_group = create_adjustment_bind_group(
-                device,
-                &self.adjustment_bind_group_layout,
-                &adjustment_buffer,
-            );
-            PaneGpu {
-                vertex_buffer: create_vertex_buffer(device, required_size),
-                capacity: required_size,
-                draws: Vec::new(),
-                adjustment_buffer,
-                adjustment_bind_group,
-            }
-        });
+        let pane = self
+            .panes
+            .entry((state.pane_id, state.render_slot))
+            .or_insert_with(|| {
+                let adjustment_buffer = create_adjustment_buffer(device);
+                let adjustment_bind_group = create_adjustment_bind_group(
+                    device,
+                    &self.adjustment_bind_group_layout,
+                    &adjustment_buffer,
+                );
+                PaneGpu {
+                    vertex_buffer: create_vertex_buffer(device, required_size),
+                    capacity: required_size,
+                    draws: Vec::new(),
+                    adjustment_buffer,
+                    adjustment_bind_group,
+                }
+            });
         queue.write_buffer(
             &pane.adjustment_buffer,
             0,
@@ -415,7 +422,7 @@ impl ImageRenderResources {
     fn paint_pane(&self, render_pass: &mut wgpu::RenderPass<'_>, state: PaneRenderState) {
         let (Some(image), Some(pane)) = (
             self.images.get(&state.image_id),
-            self.panes.get(&state.pane_id),
+            self.panes.get(&(state.pane_id, state.render_slot)),
         ) else {
             return;
         };
@@ -573,20 +580,34 @@ fn visible_tile_vertices(
     let top_px = (tile[1] as f32 - visible_top) / scale_y;
     let right_px = left_px + tile[2] as f32 / scale_x;
     let bottom_px = top_px + tile[3] as f32 / scale_y;
-    let left = left_px / pane_width * 2.0 - 1.0;
-    let right = right_px / pane_width * 2.0 - 1.0;
-    let top = 1.0 - top_px / pane_height * 2.0;
-    let bottom = 1.0 - bottom_px / pane_height * 2.0;
-    if right < -1.0 || left > 1.0 || bottom > 1.0 || top < -1.0 {
+    let clip_left = state.clip_rect[0].clamp(0.0, pane_width);
+    let clip_top = state.clip_rect[1].clamp(0.0, pane_height);
+    let clip_right = state.clip_rect[2].clamp(clip_left, pane_width);
+    let clip_bottom = state.clip_rect[3].clamp(clip_top, pane_height);
+    let clipped_left_px = left_px.max(clip_left);
+    let clipped_top_px = top_px.max(clip_top);
+    let clipped_right_px = right_px.min(clip_right);
+    let clipped_bottom_px = bottom_px.min(clip_bottom);
+    if clipped_right_px <= clipped_left_px || clipped_bottom_px <= clipped_top_px {
         return None;
     }
+    let tile_screen_width = (right_px - left_px).max(f32::EPSILON);
+    let tile_screen_height = (bottom_px - top_px).max(f32::EPSILON);
+    let u0 = (clipped_left_px - left_px) / tile_screen_width;
+    let v0 = (clipped_top_px - top_px) / tile_screen_height;
+    let u1 = (clipped_right_px - left_px) / tile_screen_width;
+    let v1 = (clipped_bottom_px - top_px) / tile_screen_height;
+    let left = clipped_left_px / pane_width * 2.0 - 1.0;
+    let right = clipped_right_px / pane_width * 2.0 - 1.0;
+    let top = 1.0 - clipped_top_px / pane_height * 2.0;
+    let bottom = 1.0 - clipped_bottom_px / pane_height * 2.0;
     Some([
-        Vertex::new(left, top, 0.0, 0.0),
-        Vertex::new(left, bottom, 0.0, 1.0),
-        Vertex::new(right, bottom, 1.0, 1.0),
-        Vertex::new(left, top, 0.0, 0.0),
-        Vertex::new(right, bottom, 1.0, 1.0),
-        Vertex::new(right, top, 1.0, 0.0),
+        Vertex::new(left, top, u0, v0),
+        Vertex::new(left, bottom, u0, v1),
+        Vertex::new(right, bottom, u1, v1),
+        Vertex::new(left, top, u0, v0),
+        Vertex::new(right, bottom, u1, v1),
+        Vertex::new(right, top, u1, v0),
     ])
 }
 
@@ -672,11 +693,13 @@ mod tests {
     fn pane_state(source_size: [u32; 2], physical_size: [f32; 2]) -> PaneRenderState {
         PaneRenderState {
             pane_id: PaneId(1),
+            render_slot: 0,
             image_id: ImageId(1),
             center: [0.5, 0.5],
             source_size,
             source_pixels_per_physical_pixel: 1.0,
             physical_size,
+            clip_rect: [0.0, 0.0, physical_size[0], physical_size[1]],
             exposure_ev: 0.0,
             gamma: 1.0,
         }
@@ -768,5 +791,29 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn tile_geometry_is_cropped_without_rescaling_for_split_comparison() {
+        let mut state = pane_state([100, 100], [100.0, 100.0]);
+        state.clip_rect = [0.0, 0.0, 40.0, 100.0];
+        let vertices = visible_tile_vertices([100, 100], [0, 0, 100, 100], state)
+            .expect("left split remains visible");
+
+        assert_eq!(vertices[0], Vertex::new(-1.0, 1.0, 0.0, 0.0));
+        assert!((vertices[2].position[0] - -0.2).abs() < 0.000_001);
+        assert_eq!(vertices[2].position[1], -1.0);
+        assert_eq!(vertices[2].uv, [0.4, 1.0]);
+        assert!((vertices[5].position[0] - -0.2).abs() < 0.000_001);
+        assert_eq!(vertices[5].position[1], 1.0);
+        assert_eq!(vertices[5].uv, [0.4, 0.0]);
+    }
+
+    #[test]
+    fn tiles_outside_the_comparison_clip_are_culled() {
+        let mut state = pane_state([100, 100], [100.0, 100.0]);
+        state.clip_rect = [60.0, 0.0, 100.0, 100.0];
+
+        assert!(visible_tile_vertices([100, 100], [0, 0, 50, 100], state).is_none());
     }
 }

@@ -1,0 +1,7 @@
+# Frank automatic-alignment transform corpus v1
+# name	seed	scale	translation_x	translation_y	exposure	scale_tolerance	translation_tolerance	min_confidence
+moderate-zoom	7	1.18	0.10	-0.07	0.55	0.04	0.025	0.20
+large-focal-change	11	0.43	0.03	0.14	0.72	0.04	0.025	0.16
+translation-only	23	1.00	-0.16	0.09	1.20	0.04	0.025	0.20
+close-crop	31	1.62	-0.08	-0.12	0.82	0.05	0.030	0.16
+dark-rendering	41	0.84	0.04	-0.03	0.38	0.04	0.025	0.16

@@ -9,8 +9,11 @@ use eframe::egui::{self, Align2, Color32, FontId, pos2};
 use image_loader::{DecodeQuality, DecodeReservation, ImageLoader, RawDevelopOptions};
 use renderer_wgpu::{PaneRenderState, TileRenderer, UploadImage, UploadTile};
 use rfd::FileDialog;
-use ui_egui::{ManualRegistrationPoints, RegistrationRequest, UiState};
-use viewer_model::{ImageId, ImageMetadata, MAX_PANES, PaneId, Workspace};
+use ui_egui::{
+    AlignmentDiagnosticMatch, AlignmentDiagnosticOverlay, AlignmentQuality, ComparisonMode,
+    ManualRegistrationPoints, RegistrationRequest, UiState,
+};
+use viewer_model::{ImageId, ImageMetadata, MAX_PANES, Pane, PaneId, Workspace};
 
 use crate::{
     comparison::{exposure_match_ev, fit_preview_curve, visible_region_luminance},
@@ -20,7 +23,10 @@ use crate::{
         full_raw_satisfies_resolution_request, needs_full_raw_development,
         preview_detail_exhausted, raw_options_match, raw_recipe_matches,
     },
-    registration::{AutoRegistrationEstimate, estimate_registration},
+    registration::{
+        AutoRegistrationDiagnostics, AutoRegistrationEstimate, AutoRegistrationFailure,
+        estimate_registration,
+    },
     workspace_batch::resize_workspace_for_batch,
 };
 
@@ -35,11 +41,11 @@ struct PendingRegistration {
     target_image: ImageId,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct AutomaticRegistrationResult {
     target_pane: PaneId,
     pending: PendingRegistration,
-    estimate: Option<AutoRegistrationEstimate>,
+    estimate: Result<AutoRegistrationEstimate, AutoRegistrationFailure>,
 }
 
 pub fn run() -> eframe::Result {
@@ -71,6 +77,7 @@ struct DesktopApp {
     registration_sender: Sender<AutomaticRegistrationResult>,
     registration_receiver: Receiver<AutomaticRegistrationResult>,
     pending_registrations: HashMap<PaneId, PendingRegistration>,
+    alignment_diagnostics: Vec<AlignmentDiagnosticOverlay>,
 }
 
 impl DesktopApp {
@@ -189,6 +196,7 @@ impl DesktopApp {
             registration_sender,
             registration_receiver,
             pending_registrations: HashMap::new(),
+            alignment_diagnostics: Vec::new(),
         };
         app.open_paths(startup_paths);
         app
@@ -221,6 +229,7 @@ impl DesktopApp {
         if paths.is_empty() {
             return;
         }
+        self.ui_state.show_all_panes();
         let changes = resize_workspace_for_batch(&mut self.workspace, paths.len());
         for pane_id in changes.removed {
             self.remove_pane_runtime(pane_id);
@@ -263,6 +272,7 @@ impl DesktopApp {
     fn close_image(&mut self, pane_id: PaneId) {
         self.ui_state.cancel_note_edit_for(pane_id);
         self.ui_state.cancel_registration_for(pane_id);
+        self.ui_state.cancel_focus_for(pane_id);
         self.remove_pane_runtime(pane_id);
         self.pane_runtime.insert(pane_id, PaneRuntime::default());
         self.workspace
@@ -563,7 +573,14 @@ impl DesktopApp {
         else {
             return;
         };
-        let Some(reference_area) = paint_areas.iter().find(|area| area.pane_id == reference) else {
+        let reference_area = paint_areas
+            .iter()
+            .find(|area| area.pane_id == reference)
+            .or_else(|| {
+                ui_egui::focused_comparison_panes(&self.workspace, &self.ui_state)
+                    .and_then(|(_, target)| paint_areas.iter().find(|area| area.pane_id == target))
+            });
+        let Some(reference_area) = reference_area else {
             return;
         };
         let Some(reference_sample) = self.pane_runtime.get(&reference).and_then(|runtime| {
@@ -705,6 +722,9 @@ impl DesktopApp {
     fn cancel_automatic_registration_for(&mut self, pane_id: PaneId) {
         self.pending_registrations
             .retain(|target, pending| *target != pane_id && pending.reference_pane != pane_id);
+        self.alignment_diagnostics.retain(|diagnostics| {
+            diagnostics.target_pane != pane_id && diagnostics.reference_pane != pane_id
+        });
         self.ui_state.registration_busy = !self.pending_registrations.is_empty();
     }
 
@@ -755,6 +775,9 @@ impl DesktopApp {
             return false;
         }
 
+        self.alignment_diagnostics
+            .retain(|diagnostics| diagnostics.target_pane != target_pane);
+        self.ui_state.alignment_quality = None;
         self.pending_registrations.insert(target_pane, pending);
         self.ui_state.registration_busy = true;
         self.ui_state.registration_status = Some(format!("Aligning pane {}…", target_pane.0));
@@ -802,6 +825,9 @@ impl DesktopApp {
     }
 
     fn apply_manual_registration(&mut self, points: ManualRegistrationPoints) {
+        self.alignment_diagnostics
+            .retain(|diagnostics| diagnostics.target_pane != points.target_pane);
+        self.ui_state.alignment_quality = None;
         if self.workspace.reference_pane_id() != Some(points.reference_pane) {
             self.ui_state.registration_status =
                 Some("Reference pane changed; manual alignment was discarded".to_owned());
@@ -841,6 +867,8 @@ impl DesktopApp {
                     self.ui_state.cancel_registration_for(previous);
                 }
                 self.pending_registrations.clear();
+                self.alignment_diagnostics.clear();
+                self.ui_state.alignment_quality = None;
                 self.ui_state.registration_busy = false;
                 match self.workspace.set_reference_pane(pane_id) {
                     Ok(()) => {
@@ -872,12 +900,50 @@ impl DesktopApp {
             }
             RegistrationRequest::ResetAll => {
                 self.pending_registrations.clear();
+                self.alignment_diagnostics.clear();
+                self.ui_state.alignment_quality = None;
                 self.ui_state.registration_busy = false;
                 self.workspace.reset_sync_adjustments();
                 self.ui_state.registration_status =
                     Some("All alignment adjustments reset".to_owned());
             }
         }
+    }
+
+    fn record_alignment_diagnostics(
+        &mut self,
+        reference_pane: PaneId,
+        target_pane: PaneId,
+        succeeded: bool,
+        diagnostics: &AutoRegistrationDiagnostics,
+    ) {
+        self.alignment_diagnostics
+            .retain(|overlay| overlay.target_pane != target_pane);
+        if !diagnostics.matches.is_empty() {
+            self.alignment_diagnostics.push(AlignmentDiagnosticOverlay {
+                reference_pane,
+                target_pane,
+                matches: diagnostics
+                    .matches
+                    .iter()
+                    .map(|feature_match| AlignmentDiagnosticMatch {
+                        reference: feature_match.reference,
+                        target: feature_match.target,
+                        inlier: feature_match.inlier,
+                    })
+                    .collect(),
+            });
+        }
+        self.ui_state.alignment_quality = Some(AlignmentQuality {
+            target_pane,
+            succeeded,
+            confidence: diagnostics.confidence,
+            reference_features: diagnostics.reference_features,
+            target_features: diagnostics.target_features,
+            candidate_matches: diagnostics.candidate_matches,
+            inliers: diagnostics.inliers,
+            median_error_pixels: diagnostics.median_error_pixels,
+        });
     }
 
     fn process_automatic_registration_results(&mut self) {
@@ -906,35 +972,64 @@ impl DesktopApp {
                     Some("An image changed; stale alignment was discarded".to_owned());
                 continue;
             }
-            let Some(estimate) = result.estimate else {
-                self.ui_state.registration_status = Some(format!(
-                    "Pane {} could not be aligned confidently; try manual alignment",
-                    result.target_pane.0
-                ));
-                continue;
-            };
-            match self.workspace.align_pane_from_points(
-                result.pending.reference_pane,
-                result.target_pane,
-                estimate.reference_points,
-                estimate.target_points,
-            ) {
-                Ok(_) => {
-                    self.ui_state.registration_status = Some(format!(
-                        "Pane {} aligned · {:.0}% · {}/{} inliers · {:.1}px error · scale {:.3}× · offset {:+.3}, {:+.3}",
-                        result.target_pane.0,
-                        estimate.confidence * 100.0,
-                        estimate.inliers,
-                        estimate.candidate_matches,
-                        estimate.median_error_pixels,
-                        estimate.mapping_scale,
-                        estimate.translation.x,
-                        estimate.translation.y
-                    ));
+            match result.estimate {
+                Ok(estimate) => {
+                    match self.workspace.align_pane_from_points(
+                        result.pending.reference_pane,
+                        result.target_pane,
+                        estimate.reference_points,
+                        estimate.target_points,
+                    ) {
+                        Ok(_) => {
+                            self.record_alignment_diagnostics(
+                                result.pending.reference_pane,
+                                result.target_pane,
+                                true,
+                                &estimate.diagnostics,
+                            );
+                            self.ui_state.registration_status = Some(format!(
+                                "Pane {} aligned · {:.0}% confidence · {} features · {}/{} inliers · {:.1}px error · scale {:.3}× · offset {:+.3}, {:+.3}",
+                                result.target_pane.0,
+                                estimate.confidence * 100.0,
+                                estimate.diagnostics.reference_features
+                                    + estimate.diagnostics.target_features,
+                                estimate.diagnostics.inliers,
+                                estimate.diagnostics.candidate_matches,
+                                estimate.median_error_pixels,
+                                estimate.mapping_scale,
+                                estimate.translation.x,
+                                estimate.translation.y
+                            ));
+                        }
+                        Err(error) => {
+                            self.record_alignment_diagnostics(
+                                result.pending.reference_pane,
+                                result.target_pane,
+                                false,
+                                &estimate.diagnostics,
+                            );
+                            self.ui_state.registration_status =
+                                Some(format!("Auto alignment failed: {error}"));
+                        }
+                    }
                 }
-                Err(error) => {
-                    self.ui_state.registration_status =
-                        Some(format!("Auto alignment failed: {error}"));
+                Err(failure) => {
+                    self.record_alignment_diagnostics(
+                        result.pending.reference_pane,
+                        result.target_pane,
+                        false,
+                        &failure.diagnostics,
+                    );
+                    self.ui_state.registration_status = Some(format!(
+                        "Pane {} not aligned [{}]: {} · features {}/{} · {} matches · {} inliers; try manual alignment",
+                        result.target_pane.0,
+                        failure.reason.code(),
+                        failure.reason,
+                        failure.diagnostics.reference_features,
+                        failure.diagnostics.target_features,
+                        failure.diagnostics.candidate_matches,
+                        failure.diagnostics.inliers
+                    ));
                 }
             }
         }
@@ -987,6 +1082,7 @@ impl DesktopApp {
 
     fn add_image_callbacks(&self, ui: &mut egui::Ui, output: &ui_egui::UiOutput) {
         let reference_pane = self.workspace.reference_pane_id();
+        let comparison_panes = ui_egui::focused_comparison_panes(&self.workspace, &self.ui_state);
         let reference_metadata = reference_pane.and_then(|reference| {
             self.workspace
                 .panes
@@ -1003,21 +1099,65 @@ impl DesktopApp {
             else {
                 continue;
             };
-            if let Some(image_id) = pane.image_id {
-                ui.painter().add(self.renderer.paint_callback(
-                    area.rect,
-                    PaneRenderState {
-                        pane_id: pane.id,
-                        image_id,
-                        center: [pane.viewport.center.x as f32, pane.viewport.center.y as f32],
-                        source_size: pane.image_size.unwrap_or([1, 1]),
-                        source_pixels_per_physical_pixel:
-                            pane.viewport.source_pixels_per_physical_pixel as f32,
-                        physical_size: area.physical_size,
-                        exposure_ev: pane.display_exposure_ev(),
-                        gamma: pane.display_gamma(),
-                    },
-                ));
+            let full_clip = [0.0, 0.0, area.physical_size[0], area.physical_size[1]];
+            if comparison_panes.is_some_and(|(_, target)| target == pane.id) {
+                let (reference, _) = comparison_panes.expect("comparison pair exists");
+                let reference = self
+                    .workspace
+                    .panes
+                    .iter()
+                    .find(|candidate| candidate.id == reference)
+                    .expect("comparison reference exists");
+                match self.ui_state.comparison_mode() {
+                    ComparisonMode::Normal if self.ui_state.blink_reference_visible() => {
+                        self.add_pane_image_callback(ui, area, reference, pane.id, 1, full_clip);
+                    }
+                    ComparisonMode::VerticalSplit => {
+                        let divider = area.physical_size[0]
+                            * self.ui_state.split_position().clamp(0.02, 0.98);
+                        self.add_pane_image_callback(
+                            ui,
+                            area,
+                            reference,
+                            pane.id,
+                            1,
+                            [0.0, 0.0, divider, area.physical_size[1]],
+                        );
+                        self.add_pane_image_callback(
+                            ui,
+                            area,
+                            pane,
+                            pane.id,
+                            2,
+                            [divider, 0.0, area.physical_size[0], area.physical_size[1]],
+                        );
+                    }
+                    ComparisonMode::HorizontalSplit => {
+                        let divider = area.physical_size[1]
+                            * self.ui_state.split_position().clamp(0.02, 0.98);
+                        self.add_pane_image_callback(
+                            ui,
+                            area,
+                            reference,
+                            pane.id,
+                            1,
+                            [0.0, 0.0, area.physical_size[0], divider],
+                        );
+                        self.add_pane_image_callback(
+                            ui,
+                            area,
+                            pane,
+                            pane.id,
+                            2,
+                            [0.0, divider, area.physical_size[0], area.physical_size[1]],
+                        );
+                    }
+                    ComparisonMode::Normal => {
+                        self.add_pane_image_callback(ui, area, pane, pane.id, 0, full_clip);
+                    }
+                }
+            } else {
+                self.add_pane_image_callback(ui, area, pane, pane.id, 0, full_clip);
             }
             if let Some(runtime) = self.pane_runtime.get(&pane.id) {
                 self.paint_status(ui, area, runtime);
@@ -1045,6 +1185,39 @@ impl DesktopApp {
                 );
             }
         }
+    }
+
+    fn add_pane_image_callback(
+        &self,
+        ui: &mut egui::Ui,
+        area: &ui_egui::PanePaintArea,
+        source: &Pane,
+        render_pane_id: PaneId,
+        render_slot: u8,
+        clip_rect: [f32; 4],
+    ) {
+        let Some(image_id) = source.image_id else {
+            return;
+        };
+        ui.painter().add(self.renderer.paint_callback(
+            area.rect,
+            PaneRenderState {
+                pane_id: render_pane_id,
+                render_slot,
+                image_id,
+                center: [
+                    source.viewport.center.x as f32,
+                    source.viewport.center.y as f32,
+                ],
+                source_size: source.image_size.unwrap_or([1, 1]),
+                source_pixels_per_physical_pixel: source.viewport.source_pixels_per_physical_pixel
+                    as f32,
+                physical_size: area.physical_size,
+                clip_rect,
+                exposure_ev: source.display_exposure_ev(),
+                gamma: source.display_gamma(),
+            },
+        ));
     }
 
     fn paint_status(&self, ui: &egui::Ui, area: &ui_egui::PanePaintArea, runtime: &PaneRuntime) {
@@ -1219,6 +1392,7 @@ impl eframe::App for DesktopApp {
             &self.workspace,
             &self.ui_state,
             &output.paint_areas,
+            &self.alignment_diagnostics,
         );
         if output.open_requested {
             self.open_dialog();

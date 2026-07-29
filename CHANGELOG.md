@@ -6,6 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-30
+
+### Added
+
+- Add a clickable `REF` control to every loaded pane, a persistent reference border in normal and Clean views, and the `R` shortcut for making the active pane the reference.
+- Add structured Auto align quality reporting with feature, match, inlier, confidence, residual-error, and stable failure-reason diagnostics.
+- Add an optional match overlay that distinguishes accepted geometric inliers from rejected candidate matches.
+- Add a versioned synthetic alignment corpus with expected translation, scale, exposure, and confidence results.
+- Add in-place active-versus-reference comparison with hold-to-blink, a latched reference view, and draggable vertical or horizontal split modes.
+- Add a reversible full-workspace comparison view with pane-local maximize/restore, image double-click, `F`/`Esc` shortcuts, direct comparison controls, and one-action Split context commands.
+
+### Changed
+
+- Preserve Auto align diagnostics when a match is rejected so failures explain whether the images lack features, reliable matches, consensus, spatial spread, supported scale, or supported rotation.
+- Limit reference Blink and Split rendering to the maximized comparison view so selecting a pane in the grid always shows that pane's own image.
+
+### Fixed
+
+- Wire the Pixel grid preference to a bounded, display-scale-aware source-pixel overlay that appears at 600% magnification and follows pan and zoom.
+
 ## [0.3.0] - 2026-07-29
 
 ### Added

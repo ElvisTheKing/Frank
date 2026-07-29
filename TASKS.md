@@ -21,6 +21,10 @@ This is the persistent product backlog. Performance work is resumed when an acce
 - [x] Provide Light, Dark, and System themes, with native system-theme detection and a Dark fallback.
 - [x] Persist versioned global UI preferences across restarts without restoring comparison sessions.
 - [x] Add a designated reference pane and highlight configured metadata values that differ from it.
+- [x] Make reference selection discoverable with per-pane controls, persistent styling, and a keyboard shortcut.
+- [x] Draw an optional source-pixel grid at high magnification with pan, zoom, and HiDPI alignment.
+- [x] Blink the reference in the maximized target pane and provide full-resolution vertical and horizontal split comparison with a draggable divider.
+- [x] Maximize a pane into a reversible full-workspace comparison view with direct controls, without modifying the pane grid.
 
 ## Release 1
 
@@ -67,7 +71,8 @@ Current checkpoint: four approximately 80.6 MP OM-5 ORFs open through 3200×2400
 - [x] Add bounded automatic translation/scale registration on background workers.
 - [x] Add manual two-point registration correction with persistent synchronized navigation.
 - [x] Upgrade automatic registration to multiscale binary feature descriptors, mutual matching, and robust consensus fitting.
-- [ ] Build a versioned registration-quality fixture corpus with expected transforms for supported cameras.
+- [x] Build a versioned synthetic registration-quality fixture corpus with expected transforms.
+- [ ] Extend the registration-quality corpus with approved, compact fixtures derived from supported cameras.
 - [ ] Add optional rotation registration after defining pixel-comparison and resampling behavior.
 - [ ] Basic exposure, brightness, contrast, and color adjustments.
 

@@ -12,6 +12,7 @@ pub(crate) struct PersistedPreferences {
     theme: AppTheme,
     clean_view: bool,
     show_pixel_grid: bool,
+    show_alignment_diagnostics: bool,
     develop_raws_on_load: bool,
     match_raw_to_preview: bool,
     sync_adjustments: bool,
@@ -28,6 +29,7 @@ impl PersistedPreferences {
             theme: ui_state.theme,
             clean_view: !ui_state.show_pane_controls,
             show_pixel_grid: ui_state.show_pixel_grid,
+            show_alignment_diagnostics: ui_state.show_alignment_diagnostics,
             develop_raws_on_load: ui_state.develop_raws_on_load,
             match_raw_to_preview: ui_state.match_raw_to_preview,
             sync_adjustments: ui_state.sync_adjustments,
@@ -42,6 +44,7 @@ impl PersistedPreferences {
         ui_state.theme = self.theme;
         ui_state.show_pane_controls = !self.clean_view;
         ui_state.show_pixel_grid = self.show_pixel_grid;
+        ui_state.show_alignment_diagnostics = self.show_alignment_diagnostics;
         ui_state.develop_raws_on_load = self.develop_raws_on_load;
         ui_state.match_raw_to_preview = self.match_raw_to_preview;
         ui_state.sync_adjustments = self.sync_adjustments;
@@ -102,6 +105,7 @@ mod tests {
         ui_state.theme = AppTheme::Light;
         ui_state.show_pane_controls = false;
         ui_state.show_pixel_grid = true;
+        ui_state.show_alignment_diagnostics = true;
         ui_state.develop_raws_on_load = true;
         ui_state.match_raw_to_preview = false;
         ui_state.sync_adjustments = true;

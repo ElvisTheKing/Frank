@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt};
 
 use image_loader::RegistrationImage;
 use viewer_model::NormalizedPoint;
@@ -19,21 +19,91 @@ const INLIER_THRESHOLD_PIXELS: f64 = 5.0;
 const MIN_MODEL_SCALE: f64 = 0.15;
 const MAX_MODEL_SCALE: f64 = 6.0;
 const MAX_AUTO_ROTATION_DEGREES: f64 = 2.5;
+const MAX_DIAGNOSTIC_MATCHES: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AutoRegistrationEstimate {
     pub(crate) reference_points: [NormalizedPoint; 2],
     pub(crate) target_points: [NormalizedPoint; 2],
     pub(crate) mapping_scale: f64,
     pub(crate) translation: NormalizedPoint,
-    pub(crate) score: f64,
     pub(crate) confidence: f32,
+    pub(crate) median_error_pixels: f64,
+    pub(crate) rotation_degrees: f64,
+    pub(crate) diagnostics: AutoRegistrationDiagnostics,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AutoRegistrationDiagnostics {
     pub(crate) reference_features: usize,
     pub(crate) target_features: usize,
     pub(crate) candidate_matches: usize,
     pub(crate) inliers: usize,
-    pub(crate) median_error_pixels: f64,
-    pub(crate) rotation_degrees: f64,
+    pub(crate) inlier_ratio: Option<f64>,
+    pub(crate) confidence: Option<f32>,
+    pub(crate) median_error_pixels: Option<f64>,
+    pub(crate) matches: Vec<DiagnosticFeatureMatch>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DiagnosticFeatureMatch {
+    pub(crate) reference: NormalizedPoint,
+    pub(crate) target: NormalizedPoint,
+    pub(crate) inlier: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AutoRegistrationFailureReason {
+    InvalidImage,
+    InsufficientFeatures,
+    InsufficientMatches,
+    NoStableTransform,
+    InsufficientInliers,
+    ImplausibleScale,
+    ExcessiveRotation,
+    ClusteredInliers,
+    LowConfidence,
+    TransformOutsideImage,
+}
+
+impl AutoRegistrationFailureReason {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidImage => "invalid-image",
+            Self::InsufficientFeatures => "insufficient-features",
+            Self::InsufficientMatches => "insufficient-matches",
+            Self::NoStableTransform => "unstable-transform",
+            Self::InsufficientInliers => "insufficient-inliers",
+            Self::ImplausibleScale => "implausible-scale",
+            Self::ExcessiveRotation => "excessive-rotation",
+            Self::ClusteredInliers => "clustered-inliers",
+            Self::LowConfidence => "low-confidence",
+            Self::TransformOutsideImage => "transform-outside-image",
+        }
+    }
+}
+
+impl fmt::Display for AutoRegistrationFailureReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidImage => "the comparison preview is invalid or too small",
+            Self::InsufficientFeatures => "not enough distinct image features were found",
+            Self::InsufficientMatches => "too few reliable feature matches were found",
+            Self::NoStableTransform => "the matches do not agree on one stable transform",
+            Self::InsufficientInliers => "too few matches support the best transform",
+            Self::ImplausibleScale => "the estimated scale is outside the supported range",
+            Self::ExcessiveRotation => "the images differ by more than 2.5° rotation",
+            Self::ClusteredInliers => "the matching features are confined to too small an area",
+            Self::LowConfidence => "the best transform did not meet the confidence threshold",
+            Self::TransformOutsideImage => "the estimated overlap lies outside the target image",
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AutoRegistrationFailure {
+    pub(crate) reason: AutoRegistrationFailureReason,
+    pub(crate) diagnostics: AutoRegistrationDiagnostics,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -138,21 +208,47 @@ impl GrayImage {
 pub(crate) fn estimate_registration(
     reference: &RegistrationImage,
     target: &RegistrationImage,
-) -> Option<AutoRegistrationEstimate> {
-    let reference_image = GrayImage::from_registration(reference)?;
-    let target_image = GrayImage::from_registration(target)?;
+) -> Result<AutoRegistrationEstimate, AutoRegistrationFailure> {
+    let Some(reference_image) = GrayImage::from_registration(reference) else {
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::InvalidImage,
+            AutoRegistrationDiagnostics::default(),
+        ));
+    };
+    let Some(target_image) = GrayImage::from_registration(target) else {
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::InvalidImage,
+            AutoRegistrationDiagnostics::default(),
+        ));
+    };
     let reference_features = extract_features(&reference_image);
     let target_features = extract_features(&target_image);
+    let mut diagnostics = AutoRegistrationDiagnostics {
+        reference_features: reference_features.len(),
+        target_features: target_features.len(),
+        ..AutoRegistrationDiagnostics::default()
+    };
     if reference_features.len() < MIN_RANSAC_INLIERS || target_features.len() < MIN_RANSAC_INLIERS {
-        return None;
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::InsufficientFeatures,
+            diagnostics,
+        ));
     }
     let matches = match_features(&reference_features, &target_features);
+    diagnostics.candidate_matches = matches.len();
     if matches.len() < MIN_RANSAC_INLIERS {
-        return None;
+        diagnostics.matches =
+            diagnostic_matches(&matches, &reference_features, &target_features, &[]);
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::InsufficientMatches,
+            diagnostics,
+        ));
     }
     let mut ransac_matches = matches.clone();
     ransac_matches.sort_by_key(|feature_match| feature_match.distance);
     ransac_matches.truncate(MAX_RANSAC_MATCHES);
+    diagnostics.matches =
+        diagnostic_matches(&ransac_matches, &reference_features, &target_features, &[]);
 
     let reference_dimensions = [reference.width as f64, reference.height as f64];
     let target_dimensions = [target.width as f64, target.height as f64];
@@ -191,19 +287,40 @@ pub(crate) fn estimate_registration(
         }
     }
 
-    let mut model = best_model?;
+    diagnostics.inliers = best_inliers.len();
+    diagnostics.matches = diagnostic_matches(
+        &ransac_matches,
+        &reference_features,
+        &target_features,
+        &best_inliers,
+    );
+    let Some(mut model) = best_model else {
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::NoStableTransform,
+            diagnostics,
+        ));
+    };
     if best_inliers.len() < MIN_RANSAC_INLIERS {
-        return None;
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::InsufficientInliers,
+            diagnostics,
+        ));
     }
     for _ in 0..2 {
-        model = fit_similarity(
+        let Some(fitted_model) = fit_similarity(
             &best_inliers,
             &ransac_matches,
             &reference_features,
             &target_features,
             reference_dimensions,
             target_dimensions,
-        )?;
+        ) else {
+            return Err(registration_failure(
+                AutoRegistrationFailureReason::NoStableTransform,
+                diagnostics,
+            ));
+        };
+        model = fitted_model;
         let (inliers, _) = model_inliers(
             model,
             &ransac_matches,
@@ -216,15 +333,33 @@ pub(crate) fn estimate_registration(
     }
 
     let inlier_ratio = best_inliers.len() as f64 / ransac_matches.len() as f64;
+    diagnostics.inliers = best_inliers.len();
+    diagnostics.inlier_ratio = Some(inlier_ratio);
+    diagnostics.matches = diagnostic_matches(
+        &ransac_matches,
+        &reference_features,
+        &target_features,
+        &best_inliers,
+    );
     if best_inliers.len() < MIN_RANSAC_INLIERS || inlier_ratio < MIN_INLIER_RATIO {
-        return None;
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::InsufficientInliers,
+            diagnostics,
+        ));
     }
     let scale = model.scale();
     let rotation_degrees = model.rotation_degrees();
-    if !(MIN_MODEL_SCALE..=MAX_MODEL_SCALE).contains(&scale)
-        || rotation_degrees.abs() > MAX_AUTO_ROTATION_DEGREES
-    {
-        return None;
+    if !(MIN_MODEL_SCALE..=MAX_MODEL_SCALE).contains(&scale) {
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::ImplausibleScale,
+            diagnostics,
+        ));
+    }
+    if rotation_degrees.abs() > MAX_AUTO_ROTATION_DEGREES {
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::ExcessiveRotation,
+            diagnostics,
+        ));
     }
     let spread = inlier_spread(
         &best_inliers,
@@ -233,7 +368,10 @@ pub(crate) fn estimate_registration(
         reference_dimensions,
     );
     if spread < MIN_INLIER_SPREAD {
-        return None;
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::ClusteredInliers,
+            diagnostics,
+        ));
     }
     let mut errors = best_inliers
         .iter()
@@ -266,8 +404,13 @@ pub(crate) fn estimate_registration(
         * residual_confidence.sqrt()
         * descriptor_confidence.sqrt())
     .clamp(0.0, 1.0) as f32;
+    diagnostics.confidence = Some(confidence);
+    diagnostics.median_error_pixels = Some(median_error_pixels);
     if confidence < 0.16 {
-        return None;
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::LowConfidence,
+            diagnostics,
+        ));
     }
 
     let reference_center = inlier_centroid(
@@ -289,12 +432,15 @@ pub(crate) fn estimate_registration(
         pixel_to_normalized(model.transform(reference_center), target_dimensions);
     let target_point_two = pixel_to_normalized(model.transform(second_pixel), target_dimensions);
     if !point_is_near_image(target_point_one) || !point_is_near_image(target_point_two) {
-        return None;
+        return Err(registration_failure(
+            AutoRegistrationFailureReason::TransformOutsideImage,
+            diagnostics,
+        ));
     }
     let transformed_center =
         model.transform([reference_dimensions[0] * 0.5, reference_dimensions[1] * 0.5]);
 
-    Some(AutoRegistrationEstimate {
+    Ok(AutoRegistrationEstimate {
         reference_points: [reference_point_one, reference_point_two],
         target_points: [target_point_one, target_point_two],
         mapping_scale: scale,
@@ -302,15 +448,39 @@ pub(crate) fn estimate_registration(
             x: transformed_center[0] / target_dimensions[0] - 0.5,
             y: transformed_center[1] / target_dimensions[1] - 0.5,
         },
-        score: inlier_ratio,
         confidence,
-        reference_features: reference_features.len(),
-        target_features: target_features.len(),
-        candidate_matches: matches.len(),
-        inliers: best_inliers.len(),
         median_error_pixels,
         rotation_degrees,
+        diagnostics,
     })
+}
+
+fn registration_failure(
+    reason: AutoRegistrationFailureReason,
+    diagnostics: AutoRegistrationDiagnostics,
+) -> AutoRegistrationFailure {
+    AutoRegistrationFailure {
+        reason,
+        diagnostics,
+    }
+}
+
+fn diagnostic_matches(
+    matches: &[FeatureMatch],
+    reference_features: &[Feature],
+    target_features: &[Feature],
+    inliers: &[usize],
+) -> Vec<DiagnosticFeatureMatch> {
+    matches
+        .iter()
+        .take(MAX_DIAGNOSTIC_MATCHES)
+        .enumerate()
+        .map(|(index, feature_match)| DiagnosticFeatureMatch {
+            reference: reference_features[feature_match.reference].point,
+            target: target_features[feature_match.target].point,
+            inlier: inliers.contains(&index),
+        })
+        .collect()
 }
 
 fn extract_features(image: &GrayImage) -> Vec<Feature> {
@@ -871,6 +1041,102 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TransformFixture {
+        name: String,
+        seed: u32,
+        scale: f64,
+        translation_x: f64,
+        translation_y: f64,
+        exposure: f64,
+        scale_tolerance: f64,
+        translation_tolerance: f64,
+        min_confidence: f32,
+    }
+
+    fn transform_fixtures_v1() -> Vec<TransformFixture> {
+        include_str!("../tests/fixtures/registration/v1/transforms.tsv")
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let fields = line.split('\t').collect::<Vec<_>>();
+                assert_eq!(fields.len(), 9, "invalid registration fixture: {line}");
+                TransformFixture {
+                    name: fields[0].to_owned(),
+                    seed: fields[1].parse().expect("fixture seed"),
+                    scale: fields[2].parse().expect("fixture scale"),
+                    translation_x: fields[3].parse().expect("fixture translation x"),
+                    translation_y: fields[4].parse().expect("fixture translation y"),
+                    exposure: fields[5].parse().expect("fixture exposure"),
+                    scale_tolerance: fields[6].parse().expect("fixture scale tolerance"),
+                    translation_tolerance: fields[7]
+                        .parse()
+                        .expect("fixture translation tolerance"),
+                    min_confidence: fields[8].parse().expect("fixture minimum confidence"),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn versioned_transform_corpus_recovers_expected_alignment() {
+        let fixtures = transform_fixtures_v1();
+        assert!(
+            fixtures.len() >= 5,
+            "the v1 corpus should remain meaningful"
+        );
+        for fixture in fixtures {
+            let reference = transformed_image(1.0, 0.0, 0.0, 1.0, fixture.seed);
+            let target = transformed_image(
+                fixture.scale,
+                fixture.translation_x,
+                fixture.translation_y,
+                fixture.exposure,
+                fixture.seed,
+            );
+            let estimate = estimate_registration(&reference, &target).unwrap_or_else(|failure| {
+                panic!(
+                    "fixture {} failed [{}]: {} with {:?}",
+                    fixture.name,
+                    failure.reason.code(),
+                    failure.reason,
+                    failure.diagnostics
+                )
+            });
+
+            assert!(
+                (estimate.mapping_scale - fixture.scale).abs() <= fixture.scale_tolerance,
+                "{} scale: expected {}, got {}",
+                fixture.name,
+                fixture.scale,
+                estimate.mapping_scale
+            );
+            assert!(
+                (estimate.translation.x - fixture.translation_x).abs()
+                    <= fixture.translation_tolerance,
+                "{} translation x: expected {}, got {}",
+                fixture.name,
+                fixture.translation_x,
+                estimate.translation.x
+            );
+            assert!(
+                (estimate.translation.y - fixture.translation_y).abs()
+                    <= fixture.translation_tolerance,
+                "{} translation y: expected {}, got {}",
+                fixture.name,
+                fixture.translation_y,
+                estimate.translation.y
+            );
+            assert!(
+                estimate.confidence >= fixture.min_confidence,
+                "{} confidence: expected at least {}, got {}",
+                fixture.name,
+                fixture.min_confidence,
+                estimate.confidence
+            );
+        }
+    }
+
     #[test]
     fn automatic_registration_recovers_translation_scale_and_exposure_change() {
         let reference = transformed_image(1.0, 0.0, 0.0, 1.0, 7);
@@ -880,7 +1146,7 @@ mod tests {
         assert!((estimate.mapping_scale - 1.18).abs() < 0.04);
         assert!((estimate.translation.x - 0.10).abs() < 0.025);
         assert!((estimate.translation.y + 0.07).abs() < 0.025);
-        assert!(estimate.inliers >= MIN_RANSAC_INLIERS);
+        assert!(estimate.diagnostics.inliers >= MIN_RANSAC_INLIERS);
         assert!(estimate.confidence > 0.2);
         assert!(estimate.rotation_degrees.abs() < 1.0);
     }
@@ -894,7 +1160,7 @@ mod tests {
         assert!((estimate.mapping_scale - 0.43).abs() < 0.04);
         assert!((estimate.translation.x - 0.03).abs() < 0.025);
         assert!((estimate.translation.y - 0.14).abs() < 0.025);
-        assert!(estimate.inliers >= MIN_RANSAC_INLIERS);
+        assert!(estimate.diagnostics.inliers >= MIN_RANSAC_INLIERS);
         assert!(estimate.median_error_pixels < 2.0);
     }
 
@@ -905,7 +1171,12 @@ mod tests {
             height: 480,
             pixels: vec![80; 640 * 480],
         };
-        assert_eq!(estimate_registration(&image, &image), None);
+        assert_eq!(
+            estimate_registration(&image, &image)
+                .expect_err("flat images must be rejected")
+                .reason,
+            AutoRegistrationFailureReason::InsufficientFeatures
+        );
     }
 
     #[test]
@@ -913,7 +1184,17 @@ mod tests {
         let reference = transformed_image(1.0, 0.0, 0.0, 1.0, 1);
         let unrelated = unrelated_image(99);
         assert!(extract_features(&GrayImage::from_registration(&unrelated).unwrap()).len() > 100);
-        assert_eq!(estimate_registration(&reference, &unrelated), None);
+        let failure =
+            estimate_registration(&reference, &unrelated).expect_err("unrelated images must fail");
+        assert!(matches!(
+            failure.reason,
+            AutoRegistrationFailureReason::InsufficientMatches
+                | AutoRegistrationFailureReason::NoStableTransform
+                | AutoRegistrationFailureReason::InsufficientInliers
+                | AutoRegistrationFailureReason::LowConfidence
+        ));
+        assert!(failure.diagnostics.reference_features >= MIN_RANSAC_INLIERS);
+        assert!(failure.diagnostics.target_features >= MIN_RANSAC_INLIERS);
     }
 
     #[test]
@@ -923,7 +1204,12 @@ mod tests {
             height: 480,
             pixels: vec![0; 10],
         };
-        assert_eq!(estimate_registration(&image, &image), None);
+        assert_eq!(
+            estimate_registration(&image, &image)
+                .expect_err("invalid storage must fail")
+                .reason,
+            AutoRegistrationFailureReason::InvalidImage
+        );
     }
 
     #[test]
