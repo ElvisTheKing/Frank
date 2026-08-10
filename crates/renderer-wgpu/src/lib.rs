@@ -1,11 +1,17 @@
 #![forbid(unsafe_code)]
 
+mod redshift;
+
 use std::{collections::HashMap, collections::VecDeque, mem::size_of, ops::Range};
 
 use bytemuck::{Pod, Zeroable};
 use egui::{PaintCallback, Rect};
 use egui_wgpu::{Callback, CallbackResources, CallbackTrait, RenderState, ScreenDescriptor, wgpu};
 use viewer_model::{ImageId, PaneId};
+
+pub use redshift::{
+    ColorMatrix, MAX_DOPPLER_BETA, doppler_shift_color_matrix, relativistic_doppler_factor,
+};
 
 pub const TILE_SIZE: u32 = 512;
 pub const TILE_BORDER: u32 = 1;
@@ -103,6 +109,7 @@ pub struct PaneRenderState {
     pub clip_rect: [f32; 4],
     pub exposure_ev: f32,
     pub gamma: f32,
+    pub doppler_matrix: ColorMatrix,
 }
 
 pub struct TileRenderer {
@@ -400,7 +407,11 @@ impl ImageRenderResources {
         queue.write_buffer(
             &pane.adjustment_buffer,
             0,
-            bytemuck::bytes_of(&DisplayAdjustment::new(state.exposure_ev, state.gamma)),
+            bytemuck::bytes_of(&DisplayAdjustment::new(
+                state.exposure_ev,
+                state.gamma,
+                state.doppler_matrix,
+            )),
         );
         if pane.capacity < required_size {
             pane.vertex_buffer = create_vertex_buffer(device, required_size.next_power_of_two());
@@ -666,17 +677,34 @@ struct PaneGpu {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct DisplayAdjustment {
-    exposure_ev: f32,
-    gamma: f32,
-    _padding: [f32; 2],
+    values: [f32; 4],
+    doppler_row_0: [f32; 4],
+    doppler_row_1: [f32; 4],
+    doppler_row_2: [f32; 4],
 }
 
 impl DisplayAdjustment {
-    const fn new(exposure_ev: f32, gamma: f32) -> Self {
+    const fn new(exposure_ev: f32, gamma: f32, doppler_matrix: ColorMatrix) -> Self {
         Self {
-            exposure_ev,
-            gamma,
-            _padding: [0.0; 2],
+            values: [exposure_ev, gamma, 0.0, 0.0],
+            doppler_row_0: [
+                doppler_matrix[0][0],
+                doppler_matrix[0][1],
+                doppler_matrix[0][2],
+                0.0,
+            ],
+            doppler_row_1: [
+                doppler_matrix[1][0],
+                doppler_matrix[1][1],
+                doppler_matrix[1][2],
+                0.0,
+            ],
+            doppler_row_2: [
+                doppler_matrix[2][0],
+                doppler_matrix[2][1],
+                doppler_matrix[2][2],
+                0.0,
+            ],
         }
     }
 }
@@ -702,6 +730,7 @@ mod tests {
             clip_rect: [0.0, 0.0, physical_size[0], physical_size[1]],
             exposure_ev: 0.0,
             gamma: 1.0,
+            doppler_matrix: doppler_shift_color_matrix(0.0),
         }
     }
 

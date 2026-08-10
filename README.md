@@ -15,6 +15,7 @@ Frank is a fast, cross-platform desktop viewer for photographers and pixel peepe
 - Maximize a pane into the full workspace for a larger Blink or Split inspection, then return to the unchanged grid.
 - View images at pixel-perfect `1:1` with sharp nearest-neighbor pixels at 100% and closer.
 - Match full-resolution RAW rendering to its embedded JPEG by default, apply non-destructive GPU exposure adjustments, and normalize each currently visible view to the reference.
+- Preview relativistic redshift while receding or blueshift while approaching, with a mirrored exponential speed control reaching 99.99% of light speed in either direction.
 - Reorder, replace, or close individual panes and switch to a borderless Clean view.
 - Display configurable camera, lens, exposure, resolution, quality, and user-note information for each image.
 - Choose Light, Dark, or System theme and retain global interface preferences between restarts.
@@ -34,8 +35,17 @@ Frank is a fast, cross-platform desktop viewer for photographers and pixel peepe
 | **Align** | Sets the reference pane and aligns the active pane—or all panes—to it. Click `REF` in a pane header or press `R` to make the active pane the reference. Auto align estimates translation and scale from image features; manual alignment uses two matching points selected in each image. |
 | **RAW** | Controls full-resolution RAW development. Develop the active RAW, develop every loaded RAW, develop automatically on load, or re-match an active RAW to its embedded preview. |
 | **Exposure** | Applies an instant GPU exposure adjustment to the active or linked panes. **Normalize visible views to reference** samples only the currently visible areas and balances them against the reference pane. |
+| **Doppler** | Applies a shared, non-destructive spectral Doppler preview to every pane. Move left from rest for approaching/blueshift or right for receding/redshift; the mirrored exponential scale reaches 99.99% of light speed in either direction. |
 | **Clean view** | Hides pane headers and controls for a borderless comparison while retaining the compact image titles. |
 | **…** | Selects the theme, chooses which camera and capture fields appear in pane titles, and enables a source-pixel grid at 600% magnification and closer. |
+
+## Relativistic Doppler-shift preview
+
+Open **Doppler**, enable the preview, and set the signed radial speed. Frank uses the longitudinal relativistic Doppler factor `sqrt((1 + β) / (1 - β))`, where `β = v/c`: positive velocity increases separation and produces redshift, while negative velocity means approach and produces blueshift. The menu reports the direction, speed, wavelength multiplier, shift `z`, and a live 500 nm example. Light speed itself is excluded because the factor becomes singular at `+c` and physical observers cannot reach either limit; the slider range is `-0.9999 c` to `+0.9999 c`.
+
+The preview reconstructs a smooth spectrum from linear sRGB, shifts it in wavelength, and integrates the result through CIE 1931 color matching functions on the GPU display path. Zero speed is calibrated to reproduce the original pixels exactly. Bands that move beyond the visible range disappear naturally rather than being wrapped around as a hue rotation.
+
+An RGB photograph contains only three visible-light measurements, not its original spectrum or any ultraviolet/infrared data, so no RGB-based simulator can determine the shifted color uniquely. Frank's wavelength mapping is relativistically exact, while its reconstructed spectrum is a documented approximation. At extreme speeds, recorded visible bands shift out of view and the missing UV or IR bands cannot replace them. The preview also does not simulate field-of-view aberration or absolute radiometric brightening/dimming.
 
 ## RAW workflow
 

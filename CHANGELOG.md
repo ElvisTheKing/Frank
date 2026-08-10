@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add a non-destructive GPU Doppler-shift preview for all panes, using the relativistic longitudinal factor, CIE-based spectral reconstruction, a mirrored exponential `-0.9999 c`–`+0.9999 c` control for approaching blueshift and receding redshift, and live wavelength/shift readouts.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added

@@ -16,6 +16,10 @@ pub(crate) struct PersistedPreferences {
     develop_raws_on_load: bool,
     match_raw_to_preview: bool,
     sync_adjustments: bool,
+    #[serde(alias = "redshift_preview_enabled")]
+    doppler_preview_enabled: bool,
+    #[serde(alias = "redshift_beta")]
+    doppler_beta: f32,
     synchronized: bool,
     sync_mode: SyncMode,
     layout_mode: LayoutMode,
@@ -33,6 +37,8 @@ impl PersistedPreferences {
             develop_raws_on_load: ui_state.develop_raws_on_load,
             match_raw_to_preview: ui_state.match_raw_to_preview,
             sync_adjustments: ui_state.sync_adjustments,
+            doppler_preview_enabled: ui_state.doppler_preview_enabled,
+            doppler_beta: ui_state.doppler_beta,
             synchronized: workspace.synchronized,
             sync_mode: workspace.sync_mode,
             layout_mode: workspace.layout_mode,
@@ -48,6 +54,8 @@ impl PersistedPreferences {
         ui_state.develop_raws_on_load = self.develop_raws_on_load;
         ui_state.match_raw_to_preview = self.match_raw_to_preview;
         ui_state.sync_adjustments = self.sync_adjustments;
+        ui_state.doppler_preview_enabled = self.doppler_preview_enabled;
+        ui_state.doppler_beta = self.doppler_beta;
         workspace.synchronized = self.synchronized;
         workspace.sync_mode = self.sync_mode;
         workspace.layout_mode = self.layout_mode;
@@ -109,6 +117,8 @@ mod tests {
         ui_state.develop_raws_on_load = true;
         ui_state.match_raw_to_preview = false;
         ui_state.sync_adjustments = true;
+        ui_state.doppler_preview_enabled = true;
+        ui_state.doppler_beta = -0.42;
 
         let expected = PersistedPreferences::capture(&workspace, &ui_state);
         let mut storage = TestStorage::default();

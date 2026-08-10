@@ -19,6 +19,9 @@ fn vs_main(
 
 struct DisplayAdjustment {
     values: vec4<f32>,
+    doppler_row_0: vec4<f32>,
+    doppler_row_1: vec4<f32>,
+    doppler_row_2: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> adjustment: DisplayAdjustment;
@@ -30,5 +33,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let safe_luminance = max(luminance, 0.000001);
     let mapped_luminance = pow(safe_luminance, adjustment.values.y) * exp2(adjustment.values.x);
     let adjusted = sampled.rgb * (mapped_luminance / safe_luminance);
-    return vec4<f32>(adjusted, sampled.a);
+    let shifted = vec3<f32>(
+        dot(adjustment.doppler_row_0.xyz, adjusted),
+        dot(adjustment.doppler_row_1.xyz, adjusted),
+        dot(adjustment.doppler_row_2.xyz, adjusted),
+    );
+    return vec4<f32>(max(shifted, vec3<f32>(0.0)), sampled.a);
 }

@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use egui::{Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2};
-use renderer_wgpu::{PaneLayout, WorkspaceLayout};
+use renderer_wgpu::{MAX_DOPPLER_BETA, PaneLayout, WorkspaceLayout, relativistic_doppler_factor};
 use serde::{Deserialize, Serialize};
 use viewer_model::{
     LayoutMode, MAX_NOTE_CHARS, MAX_PANES, MIN_PANES, NormalizedPoint, PaneId, SyncMode,
@@ -19,6 +19,7 @@ const CLOSE_CONTROL_WIDTH: f32 = 28.0;
 const PANE_GAP: f32 = 1.0;
 const MIN_PIXEL_GRID_SIZE_PHYSICAL: f64 = 6.0;
 const MAX_PIXEL_GRID_LINES_PER_AXIS: usize = 2_048;
+const DOPPLER_SLIDER_BASE: f32 = 1_000.0;
 
 #[derive(Debug)]
 pub struct UiState {
@@ -29,6 +30,8 @@ pub struct UiState {
     pub active_is_raw: bool,
     pub has_raw_images: bool,
     pub sync_adjustments: bool,
+    pub doppler_preview_enabled: bool,
+    pub doppler_beta: f32,
     pub theme: AppTheme,
     pub registration_busy: bool,
     pub registration_status: Option<String>,
@@ -56,6 +59,8 @@ impl Default for UiState {
             active_is_raw: false,
             has_raw_images: false,
             sync_adjustments: false,
+            doppler_preview_enabled: false,
+            doppler_beta: 0.0,
             theme: AppTheme::default(),
             registration_busy: false,
             registration_status: None,
@@ -71,6 +76,17 @@ impl Default for UiState {
             drop_target: None,
             note_editor: None,
             manual_registration: None,
+        }
+    }
+}
+
+impl UiState {
+    #[must_use]
+    pub fn effective_doppler_beta(&self) -> f32 {
+        if self.doppler_preview_enabled && self.doppler_beta.is_finite() {
+            self.doppler_beta.clamp(-MAX_DOPPLER_BETA, MAX_DOPPLER_BETA)
+        } else {
+            0.0
         }
     }
 }
@@ -1154,6 +1170,101 @@ fn toolbar_group_separator(ui: &mut Ui) {
     ui.add_space(2.0);
 }
 
+fn doppler_slider_position(beta: f32) -> f32 {
+    let beta = if beta.is_finite() {
+        beta.clamp(-MAX_DOPPLER_BETA, MAX_DOPPLER_BETA)
+    } else {
+        0.0
+    };
+    let normalized = beta.abs() / MAX_DOPPLER_BETA;
+    beta.signum() * (1.0 + normalized * (DOPPLER_SLIDER_BASE - 1.0)).ln() / DOPPLER_SLIDER_BASE.ln()
+}
+
+fn doppler_speed_from_slider(position: f32) -> f32 {
+    let position = if position.is_finite() {
+        position.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    let normalized = (DOPPLER_SLIDER_BASE.powf(position.abs()) - 1.0) / (DOPPLER_SLIDER_BASE - 1.0);
+    position.signum() * normalized * MAX_DOPPLER_BETA
+}
+
+fn format_doppler_speed(beta: f32) -> String {
+    let percent = f64::from(beta.abs().clamp(0.0, MAX_DOPPLER_BETA)) * 100.0;
+    if percent == 0.0 {
+        return "0 c (rest)".to_owned();
+    }
+    let magnitude = if percent < 0.1 {
+        format!("{percent:.4}")
+    } else if percent < 10.0 {
+        format!("{percent:.3}")
+    } else {
+        format!("{percent:.2}")
+    };
+    if beta < 0.0 {
+        format!("{magnitude}% c toward (blueshift)")
+    } else {
+        format!("{magnitude}% c away (redshift)")
+    }
+}
+
+fn draw_doppler_menu(ui: &mut Ui, state: &mut UiState) {
+    ui.set_min_width(370.0);
+    ui.strong("Relativistic Doppler-shift preview");
+    ui.checkbox(&mut state.doppler_preview_enabled, "Enable for all panes")
+        .on_hover_text("Apply the same signed radial velocity to every rendered image");
+
+    ui.add_enabled_ui(state.doppler_preview_enabled, |ui| {
+        let mut slider_position = doppler_slider_position(state.doppler_beta);
+        if ui
+            .add(
+                egui::Slider::new(&mut slider_position, -1.0..=1.0)
+                    .show_value(false)
+                    .text("speed"),
+            )
+            .on_hover_text(
+                "Mirrored exponential control: approaching/blueshift ← rest → receding/redshift",
+            )
+            .changed()
+        {
+            state.doppler_beta = doppler_speed_from_slider(slider_position);
+        }
+
+        let beta = state.effective_doppler_beta();
+        let factor = relativistic_doppler_factor(beta);
+        ui.label(format!("Radial speed: {}", format_doppler_speed(beta)));
+        ui.monospace(format!(
+            "λ observed = {factor:.4} × λ source   ·   z = {:.4}",
+            factor - 1.0
+        ));
+        ui.weak(format!(
+            "Example: 500 nm light is observed at {:.0} nm.",
+            500.0 * factor
+        ));
+        ui.separator();
+        if ui.button("Reset to rest").clicked() {
+            state.doppler_beta = 0.0;
+        }
+    });
+
+    ui.separator();
+    ui.label(
+        "Uses the longitudinal relativistic Doppler equation and a CIE-based spectral reconstruction. RGB files contain no ultraviolet or infrared spectrum, so those missing wavelengths cannot be recovered in either direction.",
+    );
+}
+
+fn doppler_menu_button(ui: &mut Ui, state: &mut UiState) {
+    let label = if state.doppler_preview_enabled {
+        "Doppler on"
+    } else {
+        "Doppler"
+    };
+    ui.menu_button(label, |ui| draw_doppler_menu(ui, state))
+        .response
+        .on_hover_text("Preview redshift while receding or blueshift while approaching");
+}
+
 const fn sync_mode_short_label(mode: SyncMode) -> &'static str {
     match mode {
         SyncMode::FitRelative => "Fit-relative",
@@ -1500,6 +1611,7 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                 }
             });
         });
+        ui.add_enabled_ui(has_any_image, |ui| doppler_menu_button(ui, state));
         toolbar_group_separator(ui);
         let mut clean_view = !state.show_pane_controls;
         if ui
@@ -1666,6 +1778,7 @@ fn draw_focused_toolbar(
     if ui.checkbox(&mut synchronized, "Sync").changed() {
         workspace.set_synchronized(synchronized);
     }
+    doppler_menu_button(ui, state);
     let mut clean_view = !state.show_pane_controls;
     if ui
         .checkbox(&mut clean_view, "Clean")
@@ -2600,6 +2713,33 @@ mod tests {
     #[test]
     fn raw_preview_matching_is_enabled_by_default() {
         assert!(UiState::default().match_raw_to_preview);
+    }
+
+    #[test]
+    fn doppler_preview_starts_disabled_and_neutral() {
+        let state = UiState::default();
+        assert!(!state.doppler_preview_enabled);
+        assert_eq!(state.effective_doppler_beta(), 0.0);
+    }
+
+    #[test]
+    fn exponential_doppler_slider_round_trips_signed_speed() {
+        for beta in [
+            -MAX_DOPPLER_BETA,
+            -0.5,
+            -0.1,
+            -0.001,
+            0.0,
+            0.001,
+            0.1,
+            0.5,
+            MAX_DOPPLER_BETA,
+        ] {
+            let round_trip = doppler_speed_from_slider(doppler_slider_position(beta));
+            assert!((round_trip - beta).abs() < 1.0e-5);
+        }
+        assert!(doppler_speed_from_slider(0.5) < MAX_DOPPLER_BETA * 0.04);
+        assert!(doppler_speed_from_slider(-0.5) > -MAX_DOPPLER_BETA * 0.04);
     }
 
     #[test]

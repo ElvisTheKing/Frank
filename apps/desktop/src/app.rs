@@ -7,7 +7,9 @@ use std::{
 
 use eframe::egui::{self, Align2, Color32, FontId, pos2};
 use image_loader::{DecodeQuality, DecodeReservation, ImageLoader, RawDevelopOptions};
-use renderer_wgpu::{PaneRenderState, TileRenderer, UploadImage, UploadTile};
+use renderer_wgpu::{
+    ColorMatrix, PaneRenderState, TileRenderer, UploadImage, UploadTile, doppler_shift_color_matrix,
+};
 use rfd::FileDialog;
 use ui_egui::{
     AlignmentDiagnosticMatch, AlignmentDiagnosticOverlay, AlignmentQuality, ComparisonMode,
@@ -69,6 +71,7 @@ pub fn run() -> eframe::Result {
 struct DesktopApp {
     workspace: Workspace,
     ui_state: UiState,
+    doppler_matrix: ColorMatrix,
     pane_runtime: HashMap<PaneId, PaneRuntime>,
     loader: ImageLoader,
     renderer: TileRenderer,
@@ -185,9 +188,11 @@ impl DesktopApp {
             .clamp(1, 4);
         let startup_paths = std::env::args_os().skip(1).map(PathBuf::from).collect();
         let (registration_sender, registration_receiver) = mpsc::channel();
+        let doppler_matrix = doppler_shift_color_matrix(ui_state.effective_doppler_beta());
         let mut app = Self {
             workspace,
             ui_state,
+            doppler_matrix,
             pane_runtime,
             loader: ImageLoader::new(worker_count),
             renderer: TileRenderer::new(render_state),
@@ -1216,6 +1221,7 @@ impl DesktopApp {
                 clip_rect,
                 exposure_ev: source.display_exposure_ev(),
                 gamma: source.display_gamma(),
+                doppler_matrix: self.doppler_matrix,
             },
         ));
     }
@@ -1386,6 +1392,7 @@ impl eframe::App for DesktopApp {
             self.apply_manual_registration(points);
         }
         self.request_raws_past_preview_resolution();
+        self.doppler_matrix = doppler_shift_color_matrix(self.ui_state.effective_doppler_beta());
         self.add_image_callbacks(ui, &output);
         ui_egui::paint_registration_overlays(
             ui,
