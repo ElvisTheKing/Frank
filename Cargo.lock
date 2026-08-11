@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "image-loader"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "image",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "imagecompare-desktop"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "egui",
@@ -3192,7 +3192,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "renderer-wgpu"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "egui",
@@ -3854,7 +3854,7 @@ dependencies = [
 
 [[package]]
 name = "ui-egui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -3953,7 +3953,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "viewer-model"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
