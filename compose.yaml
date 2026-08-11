@@ -39,6 +39,8 @@ services:
       EGUI_INSPECTION: 0.0.0.0:5719
       FRANK_TEST_MODE: "1"
       FRANK_TEST_THEME: ${FRANK_TEST_THEME:-dark}
+      FRANK_TEST_IMAGE_1: ${FRANK_TEST_IMAGE_1:-}
+      FRANK_TEST_IMAGE_2: ${FRANK_TEST_IMAGE_2:-}
       XDG_CACHE_HOME: /tmp/frank-cache
       XDG_CONFIG_HOME: /tmp/frank-config
     ports:

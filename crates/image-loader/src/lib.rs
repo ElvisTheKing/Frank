@@ -75,6 +75,7 @@ pub struct DecodedImage {
     pub display_linear_luminance_percentiles: [f32; 5],
     pub display_linear_rgb_medians: [f32; 3],
     pub luminance_grid: LuminanceGrid,
+    pub color_grid: ColorGrid,
     pub registration_image: RegistrationImage,
     pub tiles: Vec<DecodedTile>,
     pub decode_time: Duration,
@@ -89,6 +90,13 @@ pub struct LuminanceGrid {
     pub width: usize,
     pub height: usize,
     pub values: Vec<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorGrid {
+    pub width: usize,
+    pub height: usize,
+    pub values: Vec<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -571,6 +579,7 @@ fn decode_jpeg(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImage, Load
     let (display_linear_luminance_percentiles, display_linear_rgb_medians) =
         display_linear_stats(&rgba);
     let luminance_grid = build_luminance_grid(&rgba);
+    let color_grid = build_color_grid(&rgba);
     let registration_image = build_registration_image(&rgba);
     let tiles = split_into_tiles(&rgba, cancelled)?;
     Ok(DecodedImage {
@@ -589,6 +598,7 @@ fn decode_jpeg(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImage, Load
         display_linear_luminance_percentiles,
         display_linear_rgb_medians,
         luminance_grid,
+        color_grid,
         registration_image,
         tiles,
         decode_time: started.elapsed(),
@@ -650,6 +660,7 @@ fn decode_raw_preview(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImag
     let (display_linear_luminance_percentiles, display_linear_rgb_medians) =
         display_linear_stats(&preview);
     let luminance_grid = build_luminance_grid(&preview);
+    let color_grid = build_color_grid(&preview);
     let registration_image = build_registration_image(&preview);
     let source_dimensions = raw
         .crop_area
@@ -701,6 +712,7 @@ fn decode_raw_preview(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImag
         display_linear_luminance_percentiles,
         display_linear_rgb_medians,
         luminance_grid,
+        color_grid,
         registration_image,
         tiles,
         decode_time: started.elapsed(),
@@ -780,6 +792,7 @@ fn decode_raw_full(
     let (display_linear_luminance_percentiles, display_linear_rgb_medians) =
         display_linear_stats(&developed);
     let luminance_grid = build_luminance_grid(&developed);
+    let color_grid = build_color_grid(&developed);
     let registration_image = build_registration_image(&developed);
     let (width, height) = developed.dimensions();
     let lens = metadata.lens.map(|lens| lens.lens_name);
@@ -825,6 +838,7 @@ fn decode_raw_full(
         display_linear_luminance_percentiles,
         display_linear_rgb_medians,
         luminance_grid,
+        color_grid,
         registration_image,
         tiles,
         decode_time: started.elapsed(),
@@ -1033,6 +1047,47 @@ fn build_luminance_grid(image: &RgbaImage) -> LuminanceGrid {
         })
         .collect();
     LuminanceGrid {
+        width: grid_width,
+        height: grid_height,
+        values,
+    }
+}
+
+fn build_color_grid(image: &RgbaImage) -> ColorGrid {
+    let grid_width = LUMINANCE_GRID_SIZE.min(image.width().max(1) as usize);
+    let grid_height = LUMINANCE_GRID_SIZE.min(image.height().max(1) as usize);
+    let mut sums = vec![[0.0_f64; 3]; grid_width * grid_height];
+    let mut counts = vec![0_u32; grid_width * grid_height];
+    let step = (image.width().max(image.height()) / 512).max(1) as usize;
+    for y in (0..image.height()).step_by(step) {
+        for x in (0..image.width()).step_by(step) {
+            let pixel = image.get_pixel(x, y);
+            let rgb = [
+                srgb_to_linear(f32::from(pixel[0]) / 255.0),
+                srgb_to_linear(f32::from(pixel[1]) / 255.0),
+                srgb_to_linear(f32::from(pixel[2]) / 255.0),
+            ];
+            let grid_x = (x as usize * grid_width / image.width() as usize).min(grid_width - 1);
+            let grid_y = (y as usize * grid_height / image.height() as usize).min(grid_height - 1);
+            let index = grid_y * grid_width + grid_x;
+            for channel in 0..3 {
+                sums[index][channel] += f64::from(rgb[channel]);
+            }
+            counts[index] += 1;
+        }
+    }
+    let values = sums
+        .into_iter()
+        .zip(counts)
+        .map(|(sum, count)| {
+            if count == 0 {
+                [0.0; 3]
+            } else {
+                sum.map(|value| (value / f64::from(count)) as f32)
+            }
+        })
+        .collect();
+    ColorGrid {
         width: grid_width,
         height: grid_height,
         values,
@@ -1480,6 +1535,21 @@ mod tests {
 
         for (actual, expected) in medians.into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1.0 / 4095.0);
+        }
+    }
+
+    #[test]
+    fn color_grid_preserves_linear_rgb_channels() {
+        let image = RgbaImage::from_pixel(4, 4, Rgba([128, 64, 32, 255]));
+        let grid = build_color_grid(&image);
+        let expected = [128.0, 64.0, 32.0].map(|value| srgb_to_linear(value / 255.0));
+
+        assert_eq!((grid.width, grid.height), (4, 4));
+        assert_eq!(grid.values.len(), 16);
+        for sample in grid.values {
+            for (actual, expected) in sample.into_iter().zip(expected) {
+                assert!((actual - expected).abs() < 1.0e-6);
+            }
         }
     }
 

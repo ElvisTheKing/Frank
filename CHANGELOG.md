@@ -10,16 +10,19 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Add active-pane rotation controls for 90° turns and 1° or 0.1° alignment fine tuning.
 - Add an opt-in whole-image tone and neutral-color match from the active pane to the reference.
+- Add registered visible-area tone and per-channel color matching, with a real JPEG/ORF Docker UI regression flow.
 
 ### Changed
 
 - Apply the rotation measured by automatic and manual alignment, including synchronized pan/zoom, pointer interaction, fitting, and split-view clipping.
 - Match full-resolution RAW development to the embedded preview with per-channel color gains as well as exposure and tone.
+- Re-fit visible tone and color matching automatically when an embedded RAW preview is replaced by full RAW development.
 - Redesign manual rotation as a framed quarter-turn control with a 0.1° fine-tuning slider, live angle, and rotation-only reset; allow the reference pane to rotate; and keep all toolbar dropdowns open until explicitly dismissed.
 
 ### Fixed
 
 - Honor RAW EXIF orientation for embedded previews and full development when the decoder's pixel orientation is missing or left at its default, restoring reliable feature matching for affected portrait captures.
+- Prevent highlight color casts during visible color matching by fading chroma correction toward white.
 
 ## [0.4.0] - 2026-07-30
 

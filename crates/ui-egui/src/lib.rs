@@ -1572,12 +1572,14 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     slider_response.widget_info(|| {
                         WidgetInfo::slider(ui.is_enabled(), fine_rotation, "Fine rotation")
                     });
+                    let requested_rotation = quarter_rotation + fine_rotation;
                     if slider_response.changed()
+                        && (requested_rotation - current_rotation).abs() >= 0.05
                         && let Some(active) = active_pane
                     {
                         output.registration_request = Some(RegistrationRequest::SetRotation(
                             active,
-                            quarter_rotation + fine_rotation,
+                            requested_rotation,
                         ));
                     }
                     if ui
@@ -1716,10 +1718,16 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                         output.reference_display_match_reset_requested = true;
                     }
                     ui.separator();
-                    if ui.button("Normalize visible views to reference").clicked() {
+                    if ui
+                        .button("Match visible tone + color to reference")
+                        .on_hover_text(
+                            "Fit brightness, contrast, and color from corresponding pixels in the currently visible views",
+                        )
+                        .clicked()
+                    {
                         output.exposure_match_requested = true;
                     }
-                    if ui.button("Clear normalization").clicked() {
+                    if ui.button("Clear visible match").clicked() {
                         output.exposure_match_reset_requested = true;
                     }
                     ui.horizontal(|ui| {
@@ -2134,7 +2142,7 @@ fn draw_pane(
                 .text(
                     pos2(drag_rect.left() + 8.0, title_rect.bottom() - 11.0),
                     Align2::LEFT_CENTER,
-                    secondary,
+                    &secondary,
                     FontId::proportional(10.5),
                     colors.secondary_text,
                 );
@@ -2334,11 +2342,12 @@ fn draw_pane(
             })
             .on_hover_text("Drag to reorder · double-click to edit the image note");
         title_response.widget_info(|| {
-            WidgetInfo::labeled(
-                WidgetType::Button,
-                true,
-                format!("Pane {} title: {pane_title}", pane_id.0),
-            )
+            let accessible_title = if secondary.is_empty() {
+                format!("Pane {} title: {pane_title}", pane_id.0)
+            } else {
+                format!("Pane {} title: {pane_title} · {secondary}", pane_id.0)
+            };
+            WidgetInfo::labeled(WidgetType::Button, true, accessible_title)
         });
         if title_response.clicked() || title_response.drag_started() {
             let _ = workspace.set_active(pane_id);
@@ -3264,6 +3273,7 @@ mod tests {
         harness.get_by_label("Pane 2: maximize");
         harness.get_by_label("Align").click();
         harness.run();
+        assert_eq!(harness.state().registration_request, None);
         harness.get_by_label("Show match diagnostics").click();
         harness.run();
         assert!(harness.state().ui_state.show_alignment_diagnostics);
@@ -3278,6 +3288,45 @@ mod tests {
                 RotationAdjustment::Right90
             ))
         );
+    }
+
+    #[test]
+    fn visible_tone_and_color_match_control_emits_a_request() {
+        struct HarnessState {
+            workspace: Workspace,
+            ui_state: UiState,
+            match_requested: bool,
+        }
+
+        let mut workspace = Workspace::demo();
+        for (index, pane) in workspace.panes.iter_mut().take(2).enumerate() {
+            pane.image_id = Some(viewer_model::ImageId(index as u64 + 1));
+            pane.image_size = Some([640, 480]);
+        }
+        workspace.active_pane = Some(PaneId(2));
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1_440.0, 900.0))
+            .with_pixels_per_point(1.0)
+            .build_ui_state(
+                |ui, state: &mut HarnessState| {
+                    let output = draw_workspace(ui, &mut state.workspace, &mut state.ui_state);
+                    state.match_requested |= output.exposure_match_requested;
+                },
+                HarnessState {
+                    workspace,
+                    ui_state: UiState::default(),
+                    match_requested: false,
+                },
+            );
+
+        harness.get_by_label("Exposure").click();
+        harness.run();
+        harness
+            .get_by_label("Match visible tone + color to reference")
+            .click();
+        harness.run();
+
+        assert!(harness.state().match_requested);
     }
 
     #[test]

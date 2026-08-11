@@ -50,4 +50,16 @@ $env:FRANK_SMOKE_FLOW = "diagnostics-after-rotation"
 node scripts/frank-ui-smoke.mjs
 ```
 
+## Visible color and RAW-transition regression
+
+Use a registered JPEG/RAW pair to verify both the embedded preview and the developed RAW:
+
+1. Set `FRANK_TEST_IMAGE_1` and `FRANK_TEST_IMAGE_2` to container-visible paths such as `/workspace/data/reference.JPG` and `/workspace/data/target.ORF`.
+2. Set `FRANK_SMOKE_FLOW` to `color-match-after-raw` and give the run a unique `FRANK_SMOKE_NAME`.
+3. Run `node scripts/frank-ui-smoke.mjs` from the repository root, keeping the environment variables in the same shell so the plugin's Compose launcher inherits them.
+4. Confirm the script passes its strict semantic checks for `Δ preview · Visible match`, `FULL RAW`, and the second `Visible match`.
+5. Inspect both `<name>-embedded-matched.png` and `<name>-after.png` under `artifacts/ui-tests`; retain the action transcript when diagnosing a failure.
+
+The flow intentionally develops the RAW after the first fit. This verifies that the application re-samples the new full-RAW color grid and does not reuse stale preview coefficients.
+
 See `docs/ui-testing.md` in the repository for the testability contract, artifact locations, reset commands, and manual launcher fallback.

@@ -14,7 +14,7 @@ Frank is a fast, cross-platform desktop viewer for photographers and pixel peepe
 - In the maximized view, blink the reference with `Space` or compare both images with a draggable vertical or horizontal split.
 - Maximize a pane into the full workspace for a larger Blink or Split inspection, then return to the unchanged grid.
 - View images at pixel-perfect `1:1` with sharp nearest-neighbor pixels at 100% and closer.
-- Match full-resolution RAW rendering to its embedded JPEG by default, apply non-destructive GPU exposure adjustments, and normalize each currently visible view to the reference.
+- Match full-resolution RAW rendering to its embedded JPEG by default, apply non-destructive GPU exposure adjustments, and match each currently visible view's brightness, contrast, and color to the reference.
 - Reorder, replace, or close individual panes and switch to a borderless Clean view.
 - Display configurable camera, lens, exposure, resolution, quality, and user-note information for each image.
 - Choose Light, Dark, or System theme and retain global interface preferences between restarts.
@@ -33,7 +33,7 @@ Frank is a fast, cross-platform desktop viewer for photographers and pixel peepe
 | **Sync** | Links zoom and pan between panes. The adjacent mode menu controls whether synchronization is relative to fit, width, height, or source pixels. Manual offsets, scale differences, and rotations are preserved until **Reset alignment** is used. |
 | **Align** | Sets the reference pane and aligns the active pane—or all panes—to it. Click `REF` in a pane header or press `R` to make the active pane the reference. Auto align estimates translation, scale, and rotation from image features; manual alignment uses two matching points selected in each image. Any active pane—including the reference—can be rotated with framed 90° controls, a 0.1° fine-tuning slider, a live angle readout, and a rotation-only reset. |
 | **RAW** | Controls full-resolution RAW development. Develop the active RAW, develop every loaded RAW, develop automatically on load, or re-match an active RAW to its embedded preview. |
-| **Exposure** | Applies an instant GPU exposure adjustment to the active or linked panes. **Match active tone + color to reference** balances whole-image brightness, contrast, and neutral color, while **Normalize visible views to reference** samples only the currently visible areas and balances their exposure. |
+| **Exposure** | Applies an instant GPU exposure adjustment to the active or linked panes. **Match active tone + color to reference** balances whole-image brightness, contrast, and neutral color, while **Match visible tone + color to reference** uses registered corresponding pixels from the current view and automatically re-fits after a RAW preview is replaced by full development. |
 | **Clean view** | Hides pane headers and controls for a borderless comparison while retaining the compact image titles. |
 | **…** | Selects the theme, chooses which camera and capture fields appear in pane titles, and enables a source-pixel grid at 600% magnification and closer. |
 

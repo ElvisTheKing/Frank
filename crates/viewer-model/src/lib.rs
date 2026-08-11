@@ -234,6 +234,10 @@ pub struct Pane {
     /// RAW baseline exposure, automatic display exposure, and user editing.
     #[serde(default)]
     pub exposure_match_ev: f32,
+    #[serde(default = "default_rgb_gain")]
+    pub exposure_match_gamma: [f32; 3],
+    #[serde(default = "default_rgb_gain")]
+    pub exposure_match_rgb: [f32; 3],
     #[serde(default)]
     pub preview_match_ev: f32,
     #[serde(default = "default_one")]
@@ -271,6 +275,8 @@ impl Pane {
             linked: true,
             viewport: Viewport::default(),
             exposure_match_ev: 0.0,
+            exposure_match_gamma: default_rgb_gain(),
+            exposure_match_rgb: default_rgb_gain(),
             preview_match_ev: 0.0,
             preview_match_gamma: 1.0,
             preview_match_rgb: default_rgb_gain(),
@@ -389,10 +395,25 @@ impl Pane {
                 self.preview_match_rgb[2],
             ));
         }
-        if self.exposure_match_ev.abs() >= 0.005 {
+        if self.exposure_match_ev.abs() >= 0.005
+            || self
+                .exposure_match_gamma
+                .iter()
+                .any(|gamma| (*gamma - 1.0).abs() >= 0.005)
+            || self
+                .exposure_match_rgb
+                .iter()
+                .any(|gain| (*gain - 1.0).abs() >= 0.005)
+        {
             parts.push(format!(
-                "Normalize {:+.2} EV{}",
+                "Visible match {:+.2} EV γ {:.2}/{:.2}/{:.2} RGB {:.2}/{:.2}/{:.2}{}",
                 self.exposure_match_ev,
+                self.exposure_match_gamma[0],
+                self.exposure_match_gamma[1],
+                self.exposure_match_gamma[2],
+                self.exposure_match_rgb[0],
+                self.exposure_match_rgb[1],
+                self.exposure_match_rgb[2],
                 self.normalization_confidence
                     .map(|confidence| format!(" {:.0}%", confidence * 100.0))
                     .unwrap_or_default()
@@ -412,6 +433,11 @@ impl Pane {
     }
 
     #[must_use]
+    pub fn base_display_exposure_ev(&self) -> f32 {
+        (self.preview_match_ev + self.manual_exposure_ev).clamp(-8.0, 8.0)
+    }
+
+    #[must_use]
     pub fn display_gamma(&self) -> f32 {
         self.preview_match_gamma.clamp(0.25, 4.0)
     }
@@ -419,6 +445,22 @@ impl Pane {
     #[must_use]
     pub fn display_color_gain(&self) -> [f32; 3] {
         self.preview_match_rgb.map(|gain| gain.clamp(0.25, 4.0))
+    }
+
+    #[must_use]
+    pub fn normalization_exposure_ev(&self) -> f32 {
+        self.exposure_match_ev.clamp(-6.0, 6.0)
+    }
+
+    #[must_use]
+    pub fn normalization_gamma(&self) -> [f32; 3] {
+        self.exposure_match_gamma
+            .map(|gamma| gamma.clamp(0.25, 4.0))
+    }
+
+    #[must_use]
+    pub fn normalization_color_gain(&self) -> [f32; 3] {
+        self.exposure_match_rgb.map(|gain| gain.clamp(0.25, 4.0))
     }
 
     fn sync_center_matrix(&self) -> [f64; 4] {
@@ -641,6 +683,8 @@ impl Workspace {
             pane.preview_match_gamma = 1.0;
             pane.preview_match_rgb = default_rgb_gain();
             pane.exposure_match_ev = 0.0;
+            pane.exposure_match_gamma = default_rgb_gain();
+            pane.exposure_match_rgb = default_rgb_gain();
             pane.manual_exposure_ev = 0.0;
             pane.normalization_confidence = None;
             pane.sync_center_offset = NormalizedPoint::default();
@@ -664,6 +708,8 @@ impl Workspace {
             pane.preview_match_gamma = 1.0;
             pane.preview_match_rgb = default_rgb_gain();
             pane.exposure_match_ev = 0.0;
+            pane.exposure_match_gamma = default_rgb_gain();
+            pane.exposure_match_rgb = default_rgb_gain();
             pane.manual_exposure_ev = 0.0;
             pane.normalization_confidence = None;
             pane.sync_center_offset = NormalizedPoint::default();
@@ -1417,22 +1463,29 @@ mod tests {
         pane.preview_match_gamma = 10.0;
         pane.preview_match_rgb = [0.1, 1.2, 8.0];
         pane.exposure_match_ev = 5.0;
+        pane.exposure_match_gamma = [0.8, 0.9, 1.1];
+        pane.exposure_match_rgb = [1.2, 0.9, 1.1];
         pane.manual_exposure_ev = 4.0;
         pane.normalization_confidence = Some(0.875);
 
         let title = pane.formatted_title(TitleFields::default());
         assert!(title.contains("Match +2.00 EV γ10.00"));
-        assert!(title.contains("Normalize +5.00 EV 88%"));
+        assert!(title.contains("Visible match +5.00 EV γ 0.80/0.90/1.10 RGB 1.20/0.90/1.10 88%"));
         assert!(title.contains("Manual +4.00 EV"));
         assert_eq!(pane.display_exposure_ev(), 8.0);
         assert_eq!(pane.display_gamma(), 4.0);
         assert_eq!(pane.display_color_gain(), [0.25, 1.2, 4.0]);
+        assert_eq!(pane.normalization_exposure_ev(), 5.0);
+        assert_eq!(pane.normalization_gamma(), [0.8, 0.9, 1.1]);
+        assert_eq!(pane.normalization_color_gain(), [1.2, 0.9, 1.1]);
     }
 
     #[test]
     fn comparison_exposure_starts_neutral() {
         let pane = Pane::placeholder(1, "reference");
         assert_eq!(pane.exposure_match_ev, 0.0);
+        assert_eq!(pane.exposure_match_gamma, [1.0; 3]);
+        assert_eq!(pane.exposure_match_rgb, [1.0; 3]);
         assert_eq!(pane.manual_exposure_ev, 0.0);
         assert_eq!(pane.display_gamma(), 1.0);
     }

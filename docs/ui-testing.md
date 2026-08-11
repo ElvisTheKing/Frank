@@ -17,6 +17,14 @@ docker compose logs -f ui-test
 
 The service generates two deterministic JPEG fixtures under `/tmp/frank-fixtures`, starts Frank with those paths, and writes renderer/environment diagnostics to `artifacts/ui-tests/environment.txt`.
 
+To exercise a local camera pair, pass container-visible paths. Both variables must be set in the same shell that launches Compose or the repo-local plugin runner:
+
+```powershell
+$env:FRANK_TEST_IMAGE_1 = "/workspace/data/reference.JPG"
+$env:FRANK_TEST_IMAGE_2 = "/workspace/data/target.ORF"
+docker compose up --build -d ui-test
+```
+
 Use a light-theme pass when needed:
 
 ```powershell
@@ -75,6 +83,19 @@ node scripts/frank-ui-smoke.mjs
 ```
 
 `FRANK_SMOKE_NAME` prefixes the screenshots, widget trees, and action transcript so dark and light passes can be retained together.
+
+The tone/color and RAW-transition regression aligns pane 2, matches its visible registered pixels, captures the embedded-preview result, develops the RAW, requires a second visible match in the full-RAW pane title, and captures the final result:
+
+```powershell
+$env:FRANK_TEST_IMAGE_1 = "/workspace/data/reference.JPG"
+$env:FRANK_TEST_IMAGE_2 = "/workspace/data/target.ORF"
+$env:FRANK_MCP_CONFIG = "plugins/frank-ui-control/.mcp.json"
+$env:FRANK_SMOKE_NAME = "camera-color-match"
+$env:FRANK_SMOKE_FLOW = "color-match-after-raw"
+node scripts/frank-ui-smoke.mjs
+```
+
+Keep all five environment assignments and the Node invocation in one PowerShell scope when another launcher is orchestrating the command; the plugin starts Compose and must inherit the custom image paths.
 
 ## Testability contract
 

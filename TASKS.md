@@ -64,7 +64,7 @@ Current checkpoint: four approximately 80.6 MP OM-5 ORFs open through 3200×2400
 - [x] Normalize RAW and JPEG panes from each pane's current registered viewport, rejecting clipped extremes and applying an instantaneous per-pane GPU exposure layer.
 - [x] Add manual per-pane GPU exposure with optional linked-pane synchronization and reset controls.
 - [x] Match a RAW rendering to its own embedded JPEG preview by default using a separate GPU exposure/tone layer.
-- [ ] Upgrade exposure matching to aligned overlapping samples after automatic registration is available.
+- [x] Upgrade visible tone/color matching to registered corresponding samples and refresh it after full RAW development.
 - [x] Add optional preview-matched full-resolution RAW rendering using a bounded global tone curve.
 - [ ] Add camera-specific baseline exposure policies only when backed by metadata documentation and fixtures.
 - [x] Add an expert linear RAW diagnostic mode.

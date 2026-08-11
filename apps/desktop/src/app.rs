@@ -16,7 +16,9 @@ use ui_egui::{
 use viewer_model::{ImageId, ImageMetadata, MAX_PANES, Pane, PaneId, Workspace};
 
 use crate::{
-    comparison::{exposure_match_ev, fit_color_gains, fit_preview_curve, visible_region_luminance},
+    comparison::{
+        DisplayTransform, VisibleImage, fit_color_gains, fit_preview_curve, fit_visible_color_match,
+    },
     pane_runtime::{PaneRuntime, PaneStatus, file_display_name},
     preferences::{PREFERENCES_KEY, PersistedPreferences},
     raw_pipeline::{
@@ -101,6 +103,8 @@ struct DesktopApp {
     renderer: TileRenderer,
     next_image_id: u64,
     pending_preview_matches: HashSet<PaneId>,
+    normalization_active: bool,
+    normalization_refresh_pending: bool,
     registration_sender: Sender<AutomaticRegistrationResult>,
     registration_receiver: Receiver<AutomaticRegistrationResult>,
     pending_registrations: HashMap<PaneId, PendingRegistration>,
@@ -228,6 +232,8 @@ impl DesktopApp {
             renderer: TileRenderer::new(render_state),
             next_image_id: 1,
             pending_preview_matches: HashSet::new(),
+            normalization_active: false,
+            normalization_refresh_pending: false,
             registration_sender,
             registration_receiver,
             pending_registrations: HashMap::new(),
@@ -344,6 +350,7 @@ impl DesktopApp {
         runtime.display_linear_rgb_medians = None;
         runtime.preview_linear_rgb_medians = None;
         runtime.luminance_grid = None;
+        runtime.color_grid = None;
         runtime.registration_image = None;
         runtime.display_size = None;
         runtime.source_size = None;
@@ -358,6 +365,8 @@ impl DesktopApp {
             pane.preview_match_gamma = 1.0;
             pane.preview_match_rgb = [1.0; 3];
             pane.exposure_match_ev = 0.0;
+            pane.exposure_match_gamma = [1.0; 3];
+            pane.exposure_match_rgb = [1.0; 3];
             pane.manual_exposure_ev = 0.0;
             pane.normalization_confidence = None;
         }
@@ -450,6 +459,7 @@ impl DesktopApp {
                         Some(decoded.display_linear_luminance_percentiles);
                     runtime.display_linear_rgb_medians = Some(decoded.display_linear_rgb_medians);
                     runtime.luminance_grid = Some(decoded.luminance_grid.clone());
+                    runtime.color_grid = Some(decoded.color_grid.clone());
                     let should_replace_registration_image =
                         runtime.registration_image.as_ref().is_none_or(|current| {
                             decoded.registration_image.width * decoded.registration_image.height
@@ -466,6 +476,9 @@ impl DesktopApp {
                         && runtime.preview_linear_stats.is_some()
                     {
                         self.pending_preview_matches.insert(pane_id);
+                    }
+                    if quality == DecodeQuality::FullRaw && self.normalization_active {
+                        self.normalization_refresh_pending = true;
                     }
                     let total_bytes = decoded.byte_len();
                     let reservation = decoded.take_reservation();
@@ -684,58 +697,99 @@ impl DesktopApp {
         let Some(reference_area) = reference_area else {
             return;
         };
-        let Some(reference_sample) = self.pane_runtime.get(&reference).and_then(|runtime| {
-            runtime.luminance_grid.as_ref().and_then(|grid| {
-                visible_region_luminance(
-                    grid,
-                    reference_pane,
-                    reference_area,
-                    reference_pane.display_gamma(),
-                    reference_pane.preview_match_ev + reference_pane.manual_exposure_ev,
-                )
-            })
-        }) else {
+        let Some(reference_grid) = self
+            .pane_runtime
+            .get(&reference)
+            .and_then(|runtime| runtime.color_grid.as_ref())
+        else {
             self.reset_normalization();
             return;
         };
+        let reference_transform = DisplayTransform {
+            exposure_ev: reference_pane.base_display_exposure_ev(),
+            gamma: reference_pane.display_gamma(),
+            color_gain: reference_pane.display_color_gain(),
+        };
         let mut results = Vec::new();
         for target_pane in &self.workspace.panes {
+            if target_pane.id == reference {
+                continue;
+            }
             let Some(target_area) = paint_areas
                 .iter()
                 .find(|area| area.pane_id == target_pane.id)
             else {
                 continue;
             };
-            let target_sample = self.pane_runtime.get(&target_pane.id).and_then(|runtime| {
-                runtime.luminance_grid.as_ref().and_then(|grid| {
-                    visible_region_luminance(
-                        grid,
-                        target_pane,
-                        target_area,
-                        target_pane.display_gamma(),
-                        target_pane.preview_match_ev + target_pane.manual_exposure_ev,
-                    )
-                })
-            });
-            if let Some((target_median, target_confidence)) = target_sample {
-                results.push((
-                    target_pane.id,
-                    exposure_match_ev(reference_sample.0, target_median),
-                    reference_sample.1.min(target_confidence),
-                ));
+            let Some(target_grid) = self
+                .pane_runtime
+                .get(&target_pane.id)
+                .and_then(|runtime| runtime.color_grid.as_ref())
+            else {
+                continue;
+            };
+            let target_transform = DisplayTransform {
+                exposure_ev: target_pane.base_display_exposure_ev(),
+                gamma: target_pane.display_gamma(),
+                color_gain: target_pane.display_color_gain(),
+            };
+            if let Some(color_match) = fit_visible_color_match(
+                VisibleImage {
+                    grid: reference_grid,
+                    pane: reference_pane,
+                    area: reference_area,
+                    transform: reference_transform,
+                },
+                VisibleImage {
+                    grid: target_grid,
+                    pane: target_pane,
+                    area: target_area,
+                    transform: target_transform,
+                },
+            ) {
+                results.push((target_pane.id, color_match));
             }
         }
-        self.reset_normalization();
-        for (pane_id, ev, confidence) in results {
+        self.clear_normalization_adjustments();
+        for &(pane_id, color_match) in &results {
             if let Some(pane) = self
                 .workspace
                 .panes
                 .iter_mut()
                 .find(|pane| pane.id == pane_id)
             {
-                pane.exposure_match_ev = ev;
-                pane.normalization_confidence = Some(confidence);
+                pane.exposure_match_ev = color_match.exposure_ev;
+                pane.exposure_match_gamma = color_match.gamma;
+                pane.exposure_match_rgb = color_match.color_gain;
+                pane.normalization_confidence = Some(color_match.confidence);
             }
+        }
+        self.normalization_active = !results.is_empty();
+        self.normalization_refresh_pending = false;
+        if results.is_empty() {
+            self.ui_state.registration_status = Some(
+                "Visible tone + color match unavailable: not enough unclipped image samples"
+                    .to_owned(),
+            );
+        }
+        if let Some((pane_id, color_match)) = results
+            .iter()
+            .find(|(pane_id, _)| Some(*pane_id) == self.workspace.active_pane)
+            .or_else(|| results.first())
+        {
+            self.ui_state.registration_status = Some(format!(
+                "Pane {} visible tone + color matched · {:+.2} EV · γ {:.2}/{:.2}/{:.2} · RGB {:.2}/{:.2}/{:.2} · error {:.3}→{:.3}",
+                pane_id.0,
+                color_match.exposure_ev,
+                color_match.gamma[0],
+                color_match.gamma[1],
+                color_match.gamma[2],
+                color_match.color_gain[0],
+                color_match.color_gain[1],
+                color_match.color_gain[2],
+                color_match.before_error,
+                color_match.after_error,
+            ));
         }
     }
 
@@ -819,11 +873,19 @@ impl DesktopApp {
         }
     }
 
-    fn reset_normalization(&mut self) {
+    fn clear_normalization_adjustments(&mut self) {
         for pane in &mut self.workspace.panes {
             pane.exposure_match_ev = 0.0;
+            pane.exposure_match_gamma = [1.0; 3];
+            pane.exposure_match_rgb = [1.0; 3];
             pane.normalization_confidence = None;
         }
+    }
+
+    fn reset_normalization(&mut self) {
+        self.clear_normalization_adjustments();
+        self.normalization_active = false;
+        self.normalization_refresh_pending = false;
     }
 
     fn cancel_automatic_registration_for(&mut self, pane_id: PaneId) {
@@ -1361,9 +1423,12 @@ impl DesktopApp {
                 rotation_degrees: source.alignment_rotation_degrees as f32,
                 physical_size: area.physical_size,
                 clip_rect,
-                exposure_ev: source.display_exposure_ev(),
+                exposure_ev: source.base_display_exposure_ev(),
                 gamma: source.display_gamma(),
                 color_gain: source.display_color_gain(),
+                normalization_exposure_ev: source.normalization_exposure_ev(),
+                normalization_gamma: source.normalization_gamma(),
+                normalization_color_gain: source.normalization_color_gain(),
             },
         ));
     }
@@ -1551,6 +1616,20 @@ impl eframe::App for DesktopApp {
         }
         if output.exposure_match_reset_requested {
             self.reset_normalization();
+        } else if self.normalization_refresh_pending {
+            self.begin_exposure_match(&output.paint_areas);
+            if self.normalization_active {
+                let details = self
+                    .ui_state
+                    .registration_status
+                    .take()
+                    .unwrap_or_else(|| "visible tone + color matched".to_owned());
+                self.ui_state.registration_status =
+                    Some(format!("Full RAW re-match complete · {details}"));
+            }
+            // The fit runs after the current frame's widgets were built. Force one
+            // more frame so the title, semantic tree, and GPU uniforms all expose it.
+            ui.ctx().request_repaint();
         }
         if let Some(request) = output.registration_request {
             self.handle_registration_request(request);

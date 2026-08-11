@@ -19,10 +19,24 @@ fn vs_main(
 
 struct DisplayAdjustment {
     tone_and_rg: vec4<f32>,
-    blue_and_padding: vec4<f32>,
+    blue_and_normalization_tone: vec4<f32>,
+    normalization_rgb_and_padding: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> adjustment: DisplayAdjustment;
+
+fn apply_adjustment(
+    color: vec3<f32>,
+    color_gain: vec3<f32>,
+    gamma: f32,
+    exposure_ev: f32,
+) -> vec3<f32> {
+    let balanced = color * color_gain;
+    let luminance = dot(balanced, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let safe_luminance = max(luminance, 0.000001);
+    let mapped_luminance = pow(safe_luminance, gamma) * exp2(exposure_ev);
+    return balanced * (mapped_luminance / safe_luminance);
+}
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
@@ -30,13 +44,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let color_gain = vec3<f32>(
         adjustment.tone_and_rg.z,
         adjustment.tone_and_rg.w,
-        adjustment.blue_and_padding.x,
+        adjustment.blue_and_normalization_tone.x,
     );
-    let balanced = sampled.rgb * color_gain;
-    let luminance = dot(balanced, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let safe_luminance = max(luminance, 0.000001);
-    let mapped_luminance = pow(safe_luminance, adjustment.tone_and_rg.y)
-        * exp2(adjustment.tone_and_rg.x);
-    let adjusted = balanced * (mapped_luminance / safe_luminance);
+    let base_adjusted = apply_adjustment(
+        sampled.rgb,
+        color_gain,
+        adjustment.tone_and_rg.y,
+        adjustment.tone_and_rg.x,
+    );
+    let normalization_gamma = vec3<f32>(
+        adjustment.blue_and_normalization_tone.z,
+        adjustment.blue_and_normalization_tone.w,
+        adjustment.normalization_rgb_and_padding.y,
+    );
+    let normalization_gain = vec3<f32>(
+        adjustment.normalization_rgb_and_padding.x,
+        adjustment.normalization_rgb_and_padding.z,
+        adjustment.normalization_rgb_and_padding.w,
+    );
+    let safe_base = max(base_adjusted, vec3<f32>(0.000001));
+    let color_offset = log2(max(normalization_gain, vec3<f32>(0.25)));
+    let adjusted = pow(safe_base, normalization_gamma)
+        * exp2(
+            vec3<f32>(adjustment.blue_and_normalization_tone.y)
+                + color_offset
+                    * (vec3<f32>(1.0) - clamp(safe_base, vec3<f32>(0.0), vec3<f32>(1.0))),
+        );
     return vec4<f32>(adjusted, sampled.a);
 }

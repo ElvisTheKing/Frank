@@ -1,6 +1,6 @@
 {
   "name": "frank-ui-control",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260811151738",
   "description": "Drive Frank's isolated egui UI-test environment with semantic actions and screenshots.",
   "author": {
     "name": "Frank contributors"

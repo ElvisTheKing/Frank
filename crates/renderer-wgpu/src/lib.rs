@@ -106,6 +106,9 @@ pub struct PaneRenderState {
     pub exposure_ev: f32,
     pub gamma: f32,
     pub color_gain: [f32; 3],
+    pub normalization_exposure_ev: f32,
+    pub normalization_gamma: [f32; 3],
+    pub normalization_color_gain: [f32; 3],
 }
 
 pub struct TileRenderer {
@@ -407,6 +410,9 @@ impl ImageRenderResources {
                 state.exposure_ev,
                 state.gamma,
                 state.color_gain,
+                state.normalization_exposure_ev,
+                state.normalization_gamma,
+                state.normalization_color_gain,
             )),
         );
         if pane.capacity < required_size {
@@ -777,18 +783,37 @@ struct DisplayAdjustment {
     color_gain_red: f32,
     color_gain_green: f32,
     color_gain_blue: f32,
-    _padding: [f32; 3],
+    normalization_exposure_ev: f32,
+    normalization_gamma_red: f32,
+    normalization_gamma_green: f32,
+    normalization_color_gain_red: f32,
+    normalization_gamma_blue: f32,
+    normalization_color_gain_green: f32,
+    normalization_color_gain_blue: f32,
 }
 
 impl DisplayAdjustment {
-    const fn new(exposure_ev: f32, gamma: f32, color_gain: [f32; 3]) -> Self {
+    const fn new(
+        exposure_ev: f32,
+        gamma: f32,
+        color_gain: [f32; 3],
+        normalization_exposure_ev: f32,
+        normalization_gamma: [f32; 3],
+        normalization_color_gain: [f32; 3],
+    ) -> Self {
         Self {
             exposure_ev,
             gamma,
             color_gain_red: color_gain[0],
             color_gain_green: color_gain[1],
             color_gain_blue: color_gain[2],
-            _padding: [0.0; 3],
+            normalization_exposure_ev,
+            normalization_gamma_red: normalization_gamma[0],
+            normalization_gamma_green: normalization_gamma[1],
+            normalization_color_gain_red: normalization_color_gain[0],
+            normalization_gamma_blue: normalization_gamma[2],
+            normalization_color_gain_green: normalization_color_gain[1],
+            normalization_color_gain_blue: normalization_color_gain[2],
         }
     }
 }
@@ -816,6 +841,9 @@ mod tests {
             exposure_ev: 0.0,
             gamma: 1.0,
             color_gain: [1.0; 3],
+            normalization_exposure_ev: 0.0,
+            normalization_gamma: [1.0; 3],
+            normalization_color_gain: [1.0; 3],
         }
     }
 
@@ -833,15 +861,28 @@ mod tests {
     }
 
     #[test]
-    fn display_adjustment_matches_the_two_vec4_shader_layout() {
-        assert_eq!(size_of::<DisplayAdjustment>(), 32);
-        let adjustment = DisplayAdjustment::new(1.25, 0.8, [0.9, 1.1, 1.2]);
+    fn display_adjustment_matches_the_three_vec4_shader_layout() {
+        assert_eq!(size_of::<DisplayAdjustment>(), 48);
+        let adjustment = DisplayAdjustment::new(
+            1.25,
+            0.8,
+            [0.9, 1.1, 1.2],
+            -0.5,
+            [1.1, 0.9, 1.2],
+            [1.2, 0.8, 1.0],
+        );
         assert_eq!(adjustment.exposure_ev, 1.25);
         assert_eq!(adjustment.gamma, 0.8);
         assert_eq!(adjustment.color_gain_red, 0.9);
         assert_eq!(adjustment.color_gain_green, 1.1);
         assert_eq!(adjustment.color_gain_blue, 1.2);
-        assert_eq!(adjustment._padding, [0.0; 3]);
+        assert_eq!(adjustment.normalization_exposure_ev, -0.5);
+        assert_eq!(adjustment.normalization_gamma_red, 1.1);
+        assert_eq!(adjustment.normalization_gamma_green, 0.9);
+        assert_eq!(adjustment.normalization_gamma_blue, 1.2);
+        assert_eq!(adjustment.normalization_color_gain_red, 1.2);
+        assert_eq!(adjustment.normalization_color_gain_green, 0.8);
+        assert_eq!(adjustment.normalization_color_gain_blue, 1.0);
     }
 
     #[test]

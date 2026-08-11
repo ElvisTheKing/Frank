@@ -156,7 +156,53 @@ try {
   });
 
   await callTool("click", { label_contains: "Pane 2 image viewport" });
-  if (flow === "diagnostics-after-rotation") {
+  if (flow === "color-match-after-raw") {
+    await callTool("click", { role: "Button", label_contains: "Align" });
+    await callTool("click", {
+      role: "Button",
+      label_contains: "Auto align active to reference",
+    });
+    await callTool("press_key", { key: "Escape" });
+    await callTool("wait_for", {
+      content_contains: "Frank automation status: ready",
+      timeout_secs: 30,
+    });
+    await callTool("click", { role: "Button", label_contains: "Exposure" });
+    await callTool("click", {
+      role: "Button",
+      label_contains: "Match visible tone + color to reference",
+    });
+    await callTool("press_key", { key: "Escape" });
+    await callTool("wait_for", {
+      role: "Button",
+      label_contains: "Δ preview · Visible match",
+      timeout_secs: 10,
+    });
+    await callTool("press_key", { key: "Escape" });
+    await callTool("screenshot", {
+      pixels_per_point: 1.0,
+      save_path: `/artifacts/${runName}-embedded-matched.png`,
+    });
+    await callTool("click", { role: "Button", label_contains: "RAW" });
+    await callTool("click", {
+      role: "Button",
+      label_contains: "Develop active RAW",
+    });
+    await callTool("press_key", { key: "Escape" });
+    await callTool("wait_for", {
+      content_contains: "Frank automation status: ready",
+      timeout_secs: 60,
+    });
+    await callTool("wait_for", {
+      content_contains: "FULL RAW",
+      timeout_secs: 10,
+    });
+    await callTool("wait_for", {
+      role: "Button",
+      label_contains: "Visible match",
+      timeout_secs: 30,
+    });
+  } else if (flow === "diagnostics-after-rotation") {
     await callTool("click", { role: "Button", label_contains: "Align" });
     await callTool("click", {
       role: "Button",
