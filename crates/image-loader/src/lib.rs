@@ -73,6 +73,7 @@ pub struct DecodedImage {
     pub raw_recipe: Option<RawRecipe>,
     pub raw_diagnostics: Option<RawDiagnostics>,
     pub display_linear_luminance_percentiles: [f32; 5],
+    pub display_linear_rgb_medians: [f32; 3],
     pub luminance_grid: LuminanceGrid,
     pub registration_image: RegistrationImage,
     pub tiles: Vec<DecodedTile>,
@@ -567,7 +568,8 @@ fn decode_jpeg(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImage, Load
     let rgba = decoded.into_rgba8();
     check_cancelled(cancelled)?;
     let (width, height) = rgba.dimensions();
-    let display_linear_luminance_percentiles = display_linear_luminance_stats(&rgba);
+    let (display_linear_luminance_percentiles, display_linear_rgb_medians) =
+        display_linear_stats(&rgba);
     let luminance_grid = build_luminance_grid(&rgba);
     let registration_image = build_registration_image(&rgba);
     let tiles = split_into_tiles(&rgba, cancelled)?;
@@ -585,6 +587,7 @@ fn decode_jpeg(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImage, Load
         raw_recipe: None,
         raw_diagnostics: None,
         display_linear_luminance_percentiles,
+        display_linear_rgb_medians,
         luminance_grid,
         registration_image,
         tiles,
@@ -641,9 +644,11 @@ fn decode_raw_preview(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImag
     let parameters = RawDecodeParams::default();
     let raw = decoder.raw_image(&source, &parameters, true)?;
     let metadata = decoder.raw_metadata(&source, &parameters)?;
-    let preview = orient_preview(preview, raw.orientation);
+    let orientation = effective_raw_orientation(raw.orientation, metadata.exif.orientation);
+    let preview = orient_preview(preview, orientation);
     let (width, height) = preview.dimensions();
-    let display_linear_luminance_percentiles = display_linear_luminance_stats(&preview);
+    let (display_linear_luminance_percentiles, display_linear_rgb_medians) =
+        display_linear_stats(&preview);
     let luminance_grid = build_luminance_grid(&preview);
     let registration_image = build_registration_image(&preview);
     let source_dimensions = raw
@@ -652,6 +657,7 @@ fn decode_raw_preview(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImag
         .map_or([raw.width as u32, raw.height as u32], |crop| {
             [crop.d.w as u32, crop.d.h as u32]
         });
+    let source_dimensions = oriented_dimensions(source_dimensions, orientation);
     let lens = metadata.lens.map(|lens| lens.lens_name);
     let camera = Some(format!("{} {}", metadata.make, metadata.model));
     let capture = CaptureMetadata {
@@ -693,6 +699,7 @@ fn decode_raw_preview(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImag
         raw_recipe: None,
         raw_diagnostics: None,
         display_linear_luminance_percentiles,
+        display_linear_rgb_medians,
         luminance_grid,
         registration_image,
         tiles,
@@ -713,6 +720,7 @@ fn decode_raw_full(
     let parameters = RawDecodeParams::default();
     let raw = decoder.raw_image(&source, &parameters, false)?;
     let metadata = decoder.raw_metadata(&source, &parameters)?;
+    let orientation = effective_raw_orientation(raw.orientation, metadata.exif.orientation);
     check_cancelled(cancelled)?;
 
     let mut recipe = RawRecipe {
@@ -761,7 +769,7 @@ fn decode_raw_full(
         .ok_or(LoadError::DevelopedImageEmpty)?
         .into_rgba8();
     check_cancelled(cancelled)?;
-    let developed = orient_preview(developed, raw.orientation);
+    let developed = orient_preview(developed, orientation);
     let raw_diagnostics = display_diagnostics(
         &developed,
         black_levels,
@@ -769,7 +777,8 @@ fn decode_raw_full(
         white_balance,
         linear_stats,
     );
-    let display_linear_luminance_percentiles = display_linear_luminance_stats(&developed);
+    let (display_linear_luminance_percentiles, display_linear_rgb_medians) =
+        display_linear_stats(&developed);
     let luminance_grid = build_luminance_grid(&developed);
     let registration_image = build_registration_image(&developed);
     let (width, height) = developed.dimensions();
@@ -814,6 +823,7 @@ fn decode_raw_full(
         raw_recipe: Some(recipe),
         raw_diagnostics: Some(raw_diagnostics),
         display_linear_luminance_percentiles,
+        display_linear_rgb_medians,
         luminance_grid,
         registration_image,
         tiles,
@@ -966,8 +976,9 @@ fn display_diagnostics(
     }
 }
 
-fn display_linear_luminance_stats(image: &RgbaImage) -> [f32; 5] {
-    let mut histogram = [0_u64; 4096];
+fn display_linear_stats(image: &RgbaImage) -> ([f32; 5], [f32; 3]) {
+    let mut luminance_histogram = [0_u64; 4096];
+    let mut channel_histograms = [[0_u64; 4096]; 3];
     for pixel in image.pixels() {
         let rgb = [
             srgb_to_linear(f32::from(pixel[0]) / 255.0),
@@ -975,10 +986,18 @@ fn display_linear_luminance_stats(image: &RgbaImage) -> [f32; 5] {
             srgb_to_linear(f32::from(pixel[2]) / 255.0),
         ];
         let y = luminance(rgb).clamp(0.0, 1.0);
-        histogram[(y * 4095.0).round() as usize] += 1;
+        luminance_histogram[(y * 4095.0).round() as usize] += 1;
+        for channel in 0..3 {
+            channel_histograms[channel]
+                [(rgb[channel].clamp(0.0, 1.0) * 4095.0).round() as usize] += 1;
+        }
     }
     let count = u64::from(image.width()) * u64::from(image.height());
-    [0.01, 0.10, 0.50, 0.90, 0.99].map(|fraction| generic_percentile(&histogram, count, fraction))
+    (
+        [0.01, 0.10, 0.50, 0.90, 0.99]
+            .map(|fraction| generic_percentile(&luminance_histogram, count, fraction)),
+        channel_histograms.map(|histogram| generic_percentile(&histogram, count, 0.5)),
+    )
 }
 
 fn build_luminance_grid(image: &RgbaImage) -> LuminanceGrid {
@@ -1123,6 +1142,30 @@ fn orient_preview(preview: RgbaImage, orientation: Orientation) -> RgbaImage {
         Orientation::Rotate90 => image.rotate90().into_rgba8(),
         Orientation::Transverse => image.rotate90().flipv().into_rgba8(),
         Orientation::Rotate270 => image.rotate270().into_rgba8(),
+    }
+}
+
+fn effective_raw_orientation(
+    decoded_orientation: Orientation,
+    metadata_orientation: Option<u16>,
+) -> Orientation {
+    metadata_orientation
+        .map(Orientation::from_u16)
+        .filter(|orientation| *orientation != Orientation::Unknown)
+        .unwrap_or(decoded_orientation)
+}
+
+const fn oriented_dimensions(dimensions: [u32; 2], orientation: Orientation) -> [u32; 2] {
+    match orientation {
+        Orientation::Transpose
+        | Orientation::Rotate90
+        | Orientation::Transverse
+        | Orientation::Rotate270 => [dimensions[1], dimensions[0]],
+        Orientation::Normal
+        | Orientation::Unknown
+        | Orientation::HorizontalFlip
+        | Orientation::Rotate180
+        | Orientation::VerticalFlip => dimensions,
     }
 }
 
@@ -1430,6 +1473,17 @@ mod tests {
     }
 
     #[test]
+    fn display_linear_stats_report_per_channel_medians() {
+        let image = RgbaImage::from_pixel(4, 4, Rgba([128, 64, 32, 255]));
+        let (_, medians) = display_linear_stats(&image);
+        let expected = [128.0, 64.0, 32.0].map(|value| srgb_to_linear(value / 255.0));
+
+        for (actual, expected) in medians.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0 / 4095.0);
+        }
+    }
+
+    #[test]
     fn display_diagnostics_and_luminance_grid_track_known_pixels() {
         let image = RgbaImage::from_vec(
             2,
@@ -1530,6 +1584,30 @@ mod tests {
             actual_pixels.sort_unstable();
             assert_eq!(actual_pixels, expected_pixels);
         }
+    }
+
+    #[test]
+    fn raw_exif_orientation_overrides_the_decoder_default() {
+        assert_eq!(
+            effective_raw_orientation(Orientation::Normal, Some(6)),
+            Orientation::Rotate90
+        );
+        assert_eq!(
+            effective_raw_orientation(Orientation::Rotate180, None),
+            Orientation::Rotate180
+        );
+        assert_eq!(
+            effective_raw_orientation(Orientation::Rotate270, Some(0)),
+            Orientation::Rotate270
+        );
+        assert_eq!(
+            oriented_dimensions([4_000, 3_000], Orientation::Rotate90),
+            [3_000, 4_000]
+        );
+        assert_eq!(
+            oriented_dimensions([4_000, 3_000], Orientation::Rotate180),
+            [4_000, 3_000]
+        );
     }
 
     #[test]

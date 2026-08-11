@@ -12,8 +12,13 @@ pub(crate) fn visible_normalized_region(
 ) -> Option<[f32; 4]> {
     let [image_width, image_height] = pane.image_size?;
     let scale = pane.viewport.source_pixels_per_physical_pixel as f32;
-    let half_width = area.physical_size[0] * scale / image_width.max(1) as f32 * 0.5;
-    let half_height = area.physical_size[1] * scale / image_height.max(1) as f32 * 0.5;
+    let (sin, cos) = (pane.alignment_rotation_degrees as f32)
+        .to_radians()
+        .sin_cos();
+    let source_width = cos.abs() * area.physical_size[0] + sin.abs() * area.physical_size[1];
+    let source_height = sin.abs() * area.physical_size[0] + cos.abs() * area.physical_size[1];
+    let half_width = source_width * scale / image_width.max(1) as f32 * 0.5;
+    let half_height = source_height * scale / image_height.max(1) as f32 * 0.5;
     Some([
         (pane.viewport.center.x as f32 - half_width).clamp(0.0, 1.0),
         (pane.viewport.center.y as f32 - half_height).clamp(0.0, 1.0),
@@ -102,6 +107,14 @@ pub(crate) fn fit_preview_curve(source: [f32; 5], target: [f32; 5]) -> (f32, f32
     (exposure_ev, gamma)
 }
 
+pub(crate) fn fit_color_gains(source: [f32; 3], target: [f32; 3]) -> [f32; 3] {
+    let ratios = std::array::from_fn(|channel| {
+        (target[channel].max(1.0e-5) / source[channel].max(1.0e-5)).clamp(1.0 / 16.0, 16.0)
+    });
+    let neutral = (ratios[0] * ratios[1] * ratios[2]).cbrt().max(1.0e-5);
+    ratios.map(|ratio| (ratio / neutral).clamp(0.5, 2.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +142,14 @@ mod tests {
         let (ev, gamma) = fit_preview_curve([0.1; 5], [0.4; 5]);
         assert!((ev - 2.0).abs() < 1.0e-5);
         assert_eq!(gamma, 1.0);
+    }
+
+    #[test]
+    fn color_match_separates_chroma_from_overall_exposure() {
+        let gains = fit_color_gains([0.10, 0.20, 0.40], [0.24, 0.32, 1.20]);
+        assert!((gains[0] * gains[1] * gains[2] - 1.0).abs() < 1.0e-5);
+        assert!((gains[0] / gains[1] - 1.5).abs() < 1.0e-5);
+        assert!((gains[2] / gains[1] - 1.875).abs() < 1.0e-5);
     }
 
     #[test]

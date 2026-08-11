@@ -4,10 +4,12 @@ use std::{
     env,
     error::Error,
     fs,
+    io::{BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::Instant,
 };
 
+use image::{ImageDecoder, codecs::jpeg::JpegDecoder};
 use rawler::{decoders::RawDecodeParams, get_decoder, rawsource::RawSource};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -44,9 +46,20 @@ fn inspect(path: &Path) -> Result<String, Box<dyn Error>> {
     let embedded = embedded.map_or_else(
         || "none".to_owned(),
         |preview| {
+            let mut file = fs::File::open(path).expect("RAW remains readable");
+            file.seek(SeekFrom::Start(preview.offset))
+                .expect("embedded preview offset is valid");
+            let mut decoder = JpegDecoder::new(BufReader::new(file.take(preview.length)))
+                .expect("selected embedded preview is JPEG");
+            let jpeg_orientation = decoder.orientation().ok();
+            let icc_bytes = decoder
+                .icc_profile()
+                .ok()
+                .flatten()
+                .map_or(0, |profile| profile.len());
             format!(
-                "{}×{} @{}+{}",
-                preview.width, preview.height, preview.offset, preview.length
+                "{}×{} @{}+{} orientation={jpeg_orientation:?} ICC={icc_bytes}B",
+                preview.width, preview.height, preview.offset, preview.length,
             )
         },
     );
@@ -77,7 +90,7 @@ fn inspect(path: &Path) -> Result<String, Box<dyn Error>> {
         .map_or_else(|| "unknown".to_owned(), |value| value.to_string());
 
     Ok(format!(
-        "{}\t{} {}\traw={}×{}\t{} bit\tcrop={}\torientation={:?}\tISO={}\tshutter={}\taperture={}\tfocal={}\trawler-preview={} ({:.1} ms)\tembedded={} ({:.1} ms)\tlens={}",
+        "{}\t{} {}\traw={}×{}\t{} bit\tcrop={}\torientation={:?}\texif-orientation={:?}\tISO={}\tshutter={}\taperture={}\tfocal={}\trawler-preview={} ({:.1} ms)\tembedded={} ({:.1} ms)\tlens={}",
         path.display(),
         metadata.make,
         metadata.model,
@@ -86,6 +99,7 @@ fn inspect(path: &Path) -> Result<String, Box<dyn Error>> {
         raw.bps,
         crop,
         raw.orientation,
+        metadata.exif.orientation,
         iso,
         shutter,
         aperture,

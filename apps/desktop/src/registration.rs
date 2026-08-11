@@ -503,9 +503,8 @@ fn extract_features(image: &GrayImage) -> Vec<Feature> {
                     y: (y as f64 + 0.5) / level.height as f64,
                 },
                 response,
-                // Frank currently applies translation and scale, not rotation. Keeping
-                // the descriptor upright is more repeatable than estimating a noisy
-                // orientation independently in two photographs.
+                // Keep descriptors upright instead of estimating a noisy orientation
+                // independently; the similarity consensus handles bounded rotation.
                 descriptor: describe(&level, x, y, 0.0, &pattern),
             });
         }
@@ -1209,6 +1208,54 @@ mod tests {
                 .expect_err("invalid storage must fail")
                 .reason,
             AutoRegistrationFailureReason::InvalidImage
+        );
+    }
+
+    #[test]
+    #[ignore = "local camera pair is not part of the repository"]
+    fn print_local_camera_jpeg_raw_pair_registration() {
+        use std::{path::PathBuf, thread, time::Duration};
+
+        let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let paths = [data.join("P7234066.JPG"), data.join("P7234066.ORF")];
+        if paths.iter().any(|path| !path.exists()) {
+            return;
+        }
+        let loader = image_loader::ImageLoader::new(2);
+        let handles = paths
+            .iter()
+            .map(|path| loader.load(path))
+            .collect::<Vec<_>>();
+        let mut decoded = Vec::new();
+        while decoded.len() < handles.len() {
+            match loader.try_recv() {
+                Ok(result) => {
+                    let mut image = result.result.expect("camera pair decodes");
+                    image.take_reservation();
+                    decoded.push(image);
+                }
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        decoded.sort_by(|left, right| left.path.cmp(&right.path));
+        for image in &decoded {
+            eprintln!(
+                "{}: display={}x{}, source={}x{}, luminance={:?}, rgb={:?}",
+                image.path.display(),
+                image.width,
+                image.height,
+                image.source_width,
+                image.source_height,
+                image.display_linear_luminance_percentiles,
+                image.display_linear_rgb_medians,
+            );
+        }
+        eprintln!(
+            "pair registration: {:?}",
+            estimate_registration(
+                &decoded[0].registration_image,
+                &decoded[1].registration_image,
+            )
         );
     }
 

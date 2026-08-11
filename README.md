@@ -10,7 +10,7 @@ Frank is a fast, cross-platform desktop viewer for photographers and pixel peepe
 - Open JPEG and Olympus/OM System ORF RAW files by file picker, command line, context menu, or drag and drop.
 - Open RAW files quickly through their embedded previews, then develop one or all at full resolution on demand, on load, or when zoom requires it.
 - Use synchronized or individual zoom and pan, including persistent manual alignment and a reset option.
-- Designate a reference image, highlight differing capture metadata, and use Auto align or manual alignment for translation and scale.
+- Designate a reference image, highlight differing capture metadata, and use Auto align or manual alignment for translation, scale, and rotation.
 - In the maximized view, blink the reference with `Space` or compare both images with a draggable vertical or horizontal split.
 - Maximize a pane into the full workspace for a larger Blink or Split inspection, then return to the unchanged grid.
 - View images at pixel-perfect `1:1` with sharp nearest-neighbor pixels at 100% and closer.
@@ -30,31 +30,37 @@ Frank is a fast, cross-platform desktop viewer for photographers and pixel peepe
 | **Maximize / All panes** | Use the maximize icon in a pane header, double-click its image, or press `F` to fill the workspace without removing other panes. The focused toolbar exposes Target, Reference, left/right Split, and top/bottom Split directly. Use **All panes**, `F`, `Esc`, or double-click again to restore the grid. |
 | **Fit** | Fits every image inside its pane. This is the synchronized default when a comparison is opened. |
 | **1:1** | Displays one source-image pixel per physical screen pixel. At 100% and above, pixels are shown without smoothing. |
-| **Sync** | Links zoom and pan between panes. The adjacent mode menu controls whether synchronization is relative to fit, width, height, or source pixels. Manual offsets and scale differences are preserved until **Reset alignment** is used. |
-| **Align** | Sets the reference pane and aligns the active pane—or all panes—to it. Click `REF` in a pane header or press `R` to make the active pane the reference. Auto align estimates translation and scale from image features; manual alignment uses two matching points selected in each image. |
+| **Sync** | Links zoom and pan between panes. The adjacent mode menu controls whether synchronization is relative to fit, width, height, or source pixels. Manual offsets, scale differences, and rotations are preserved until **Reset alignment** is used. |
+| **Align** | Sets the reference pane and aligns the active pane—or all panes—to it. Click `REF` in a pane header or press `R` to make the active pane the reference. Auto align estimates translation, scale, and rotation from image features; manual alignment uses two matching points selected in each image. Any active pane—including the reference—can be rotated with framed 90° controls, a 0.1° fine-tuning slider, a live angle readout, and a rotation-only reset. |
 | **RAW** | Controls full-resolution RAW development. Develop the active RAW, develop every loaded RAW, develop automatically on load, or re-match an active RAW to its embedded preview. |
-| **Exposure** | Applies an instant GPU exposure adjustment to the active or linked panes. **Normalize visible views to reference** samples only the currently visible areas and balances them against the reference pane. |
+| **Exposure** | Applies an instant GPU exposure adjustment to the active or linked panes. **Match active tone + color to reference** balances whole-image brightness, contrast, and neutral color, while **Normalize visible views to reference** samples only the currently visible areas and balances their exposure. |
 | **Clean view** | Hides pane headers and controls for a borderless comparison while retaining the compact image titles. |
 | **…** | Selects the theme, chooses which camera and capture fields appear in pane titles, and enables a source-pixel grid at 600% magnification and closer. |
 
+Toolbar dropdowns remain open while commands and settings are adjusted. Click outside a dropdown or click its toolbar button again to close it.
+
 ## RAW workflow
 
-Frank first displays a RAW file's embedded JPEG so large comparisons open quickly. The pane still uses the full RAW dimensions for zoom calculations. When the preview no longer contains enough detail, Frank switches to the developed full-resolution image; **Develop on load** performs that work immediately instead.
+Frank first displays a RAW file's embedded JPEG so large comparisons open quickly. Embedded and developed RAW images honor the camera orientation metadata, and the pane uses the correspondingly oriented full RAW dimensions for zoom calculations. When the preview no longer contains enough detail, Frank switches to the developed full-resolution image; **Develop on load** performs that work immediately instead.
 
 Full RAW development is limited to two simultaneous jobs to keep memory use bounded. **Develop all RAWs** queues every loaded RAW that has not already been developed, while completed results are reused rather than developed again.
 
-By default, the developed RAW is tone-matched to its own embedded JPEG. This match, manual exposure, and viewport normalization are non-destructive GPU adjustments, so changing them does not repeat RAW development.
+By default, the developed RAW is tone- and color-matched to its own embedded JPEG. This match, reference tone/color matching, manual exposure, and viewport normalization are non-destructive GPU adjustments, so changing them does not repeat RAW development.
 
 ## Alignment and navigation
 
-Choose a reference by clicking `REF` in its pane header, pressing `R` while it is active, using the **Align** menu, or using the image's right-click menu. The reference keeps a subtle blue border, including in Clean view. **Auto align** is intended for different captures of the same subject and adjusts translation and scale. If the images differ too much for automatic feature matching, manual alignment lets you click two corresponding points in the reference and target.
+Choose a reference by clicking `REF` in its pane header, pressing `R` while it is active, using the **Align** menu, or using the image's right-click menu. The reference keeps a subtle blue border, including in Clean view. **Auto align** is intended for different captures of the same subject and adjusts translation, scale, and rotation. If the images differ too much for automatic feature matching, manual alignment lets you click two corresponding points in the reference and target.
 
 The **Align** menu reports feature count, candidate matches, geometric inliers, confidence, and median error for the latest automatic attempt. **Show match diagnostics** overlays accepted matches in green and rejected candidates in orange, making a weak or failed alignment easier to diagnose.
 
-You can also align images by eye: disable **Sync**, adjust each pane independently, then enable it again. Frank retains those relative pan and zoom differences so the subject stays aligned during synchronized navigation. Alignment can be reset for the active pane or for the entire comparison.
+You can also align images by eye: use the 90°, 1°, and 0.1° rotation controls in **Align**, or disable **Sync** and adjust each pane independently before enabling it again. Frank retains relative rotation, pan, and zoom differences so the subject stays aligned during synchronized navigation. Alignment can be reset for the active pane or for the entire comparison.
 
 Reference Blink and Split are deliberately limited to the maximized view, so selecting panes in the grid always shows their own images. Select a loaded non-reference pane, then use its header maximize icon, double-click the image, or press `F`. The focused toolbar keeps Target, Reference, left/right Split, and top/bottom Split visible as one-click modes. Hold `Space` for a temporary reference blink. Drag the Split divider directly; click **Center** or double-click the divider to reset it.
 
 **All panes**, `F`, `Esc`, or another image double-click returns to the unchanged grid. The image context menu can open either Split orientation directly in the maximized view.
 
 Right-clicking an image provides the common pane actions in one place: set it as reference, align it, replace or close the image, close the pane, fit the image, or switch it to `1:1`.
+
+## Development
+
+The native interface can be tested without using the developer desktop. The repository includes a discoverable Codex plugin plus a Docker UI-test service that runs Frank under Xvfb with a software Vulkan renderer and exposes egui's semantic inspection protocol. See [Agent-driven UI testing](docs/ui-testing.md) for fresh-PC installation, startup, interaction, screenshot, and troubleshooting commands.

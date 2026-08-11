@@ -18,7 +18,8 @@ fn vs_main(
 @group(0) @binding(1) var image_sampler: sampler;
 
 struct DisplayAdjustment {
-    values: vec4<f32>,
+    tone_and_rg: vec4<f32>,
+    blue_and_padding: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> adjustment: DisplayAdjustment;
@@ -26,9 +27,16 @@ struct DisplayAdjustment {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sampled = textureSample(image_tile, image_sampler, input.uv);
-    let luminance = dot(sampled.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let color_gain = vec3<f32>(
+        adjustment.tone_and_rg.z,
+        adjustment.tone_and_rg.w,
+        adjustment.blue_and_padding.x,
+    );
+    let balanced = sampled.rgb * color_gain;
+    let luminance = dot(balanced, vec3<f32>(0.2126, 0.7152, 0.0722));
     let safe_luminance = max(luminance, 0.000001);
-    let mapped_luminance = pow(safe_luminance, adjustment.values.y) * exp2(adjustment.values.x);
-    let adjusted = sampled.rgb * (mapped_luminance / safe_luminance);
+    let mapped_luminance = pow(safe_luminance, adjustment.tone_and_rg.y)
+        * exp2(adjustment.tone_and_rg.x);
+    let adjusted = balanced * (mapped_luminance / safe_luminance);
     return vec4<f32>(adjusted, sampled.a);
 }

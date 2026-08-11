@@ -23,6 +23,8 @@ pub(crate) struct PaneRuntime {
     pub(crate) raw_diagnostics: Option<RawDiagnostics>,
     pub(crate) display_linear_stats: Option<[f32; 5]>,
     pub(crate) preview_linear_stats: Option<[f32; 5]>,
+    pub(crate) display_linear_rgb_medians: Option<[f32; 3]>,
+    pub(crate) preview_linear_rgb_medians: Option<[f32; 3]>,
     pub(crate) luminance_grid: Option<LuminanceGrid>,
     pub(crate) registration_image: Option<RegistrationImage>,
     pub(crate) display_size: Option<[u32; 2]>,

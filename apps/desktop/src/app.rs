@@ -16,7 +16,7 @@ use ui_egui::{
 use viewer_model::{ImageId, ImageMetadata, MAX_PANES, Pane, PaneId, Workspace};
 
 use crate::{
-    comparison::{exposure_match_ev, fit_preview_curve, visible_region_luminance},
+    comparison::{exposure_match_ev, fit_color_gains, fit_preview_curve, visible_region_luminance},
     pane_runtime::{PaneRuntime, PaneStatus, file_display_name},
     preferences::{PREFERENCES_KEY, PersistedPreferences},
     raw_pipeline::{
@@ -33,6 +33,8 @@ use crate::{
 const APP_NAME: &str = "Frank";
 const APP_ID: &str = "org.imagecomparetool.desktop";
 const GPU_UPLOAD_BUDGET_PER_FRAME: usize = 32 * 1024 * 1024;
+const TEST_MODE_ENV: &str = "FRANK_TEST_MODE";
+const TEST_THEME_ENV: &str = "FRANK_TEST_THEME";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingRegistration {
@@ -49,6 +51,7 @@ struct AutomaticRegistrationResult {
 }
 
 pub fn run() -> eframe::Result {
+    let test_mode = environment_flag(TEST_MODE_ENV);
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
@@ -62,11 +65,35 @@ pub fn run() -> eframe::Result {
     eframe::run_native(
         APP_NAME,
         native_options,
-        Box::new(|creation_context| Ok(Box::new(DesktopApp::new(creation_context)))),
+        Box::new(move |creation_context| {
+            Ok(Box::new(DesktopApp::new(creation_context, test_mode)))
+        }),
     )
 }
 
+fn environment_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no"
+        )
+    })
+}
+
+fn test_theme() -> ui_egui::AppTheme {
+    match std::env::var(TEST_THEME_ENV)
+        .unwrap_or_else(|_| "dark".to_owned())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "light" => ui_egui::AppTheme::Light,
+        _ => ui_egui::AppTheme::Dark,
+    }
+}
+
 struct DesktopApp {
+    test_mode: bool,
     workspace: Workspace,
     ui_state: UiState,
     pane_runtime: HashMap<PaneId, PaneRuntime>,
@@ -81,10 +108,15 @@ struct DesktopApp {
 }
 
 impl DesktopApp {
-    fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
-        creation_context
-            .egui_ctx
-            .set_theme(egui::ThemePreference::System);
+    fn new(creation_context: &eframe::CreationContext<'_>, test_mode: bool) -> Self {
+        creation_context.egui_ctx.set_theme(if test_mode {
+            match test_theme() {
+                ui_egui::AppTheme::Light => egui::ThemePreference::Light,
+                ui_egui::AppTheme::System | ui_egui::AppTheme::Dark => egui::ThemePreference::Dark,
+            }
+        } else {
+            egui::ThemePreference::System
+        });
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = Color32::from_rgb(22, 26, 31);
         visuals.window_fill = Color32::from_rgb(28, 33, 39);
@@ -161,7 +193,7 @@ impl DesktopApp {
             style.spacing.button_padding = egui::vec2(10.0, 5.0);
             style.spacing.interact_size = egui::vec2(36.0, 26.0);
             style.spacing.menu_margin = egui::Margin::same(8);
-            style.animation_time = 0.08;
+            style.animation_time = if test_mode { 0.0 } else { 0.08 };
         });
         let render_state = creation_context
             .wgpu_render_state
@@ -169,7 +201,9 @@ impl DesktopApp {
             .expect("the desktop host is configured to require WGPU");
         let mut workspace = Workspace::demo();
         let mut ui_state = UiState::default();
-        if let Some(preferences) = creation_context
+        if test_mode {
+            ui_state.theme = test_theme();
+        } else if let Some(preferences) = creation_context
             .storage
             .and_then(PersistedPreferences::load)
         {
@@ -186,6 +220,7 @@ impl DesktopApp {
         let startup_paths = std::env::args_os().skip(1).map(PathBuf::from).collect();
         let (registration_sender, registration_receiver) = mpsc::channel();
         let mut app = Self {
+            test_mode,
             workspace,
             ui_state,
             pane_runtime,
@@ -306,6 +341,8 @@ impl DesktopApp {
         runtime.raw_diagnostics = None;
         runtime.display_linear_stats = None;
         runtime.preview_linear_stats = None;
+        runtime.display_linear_rgb_medians = None;
+        runtime.preview_linear_rgb_medians = None;
         runtime.luminance_grid = None;
         runtime.registration_image = None;
         runtime.display_size = None;
@@ -319,6 +356,7 @@ impl DesktopApp {
         {
             pane.preview_match_ev = 0.0;
             pane.preview_match_gamma = 1.0;
+            pane.preview_match_rgb = [1.0; 3];
             pane.exposure_match_ev = 0.0;
             pane.manual_exposure_ev = 0.0;
             pane.normalization_confidence = None;
@@ -410,6 +448,7 @@ impl DesktopApp {
                     runtime.raw_diagnostics = decoded.raw_diagnostics.clone();
                     runtime.display_linear_stats =
                         Some(decoded.display_linear_luminance_percentiles);
+                    runtime.display_linear_rgb_medians = Some(decoded.display_linear_rgb_medians);
                     runtime.luminance_grid = Some(decoded.luminance_grid.clone());
                     let should_replace_registration_image =
                         runtime.registration_image.as_ref().is_none_or(|current| {
@@ -421,6 +460,7 @@ impl DesktopApp {
                     }
                     if quality == DecodeQuality::EmbeddedPreview {
                         runtime.preview_linear_stats = runtime.display_linear_stats;
+                        runtime.preview_linear_rgb_medians = runtime.display_linear_rgb_medians;
                     } else if quality == DecodeQuality::FullRaw
                         && self.ui_state.match_raw_to_preview
                         && runtime.preview_linear_stats.is_some()
@@ -561,6 +601,67 @@ impl DesktopApp {
         }
     }
 
+    fn match_active_display_to_reference(&mut self) {
+        let (Some(reference), Some(target)) = (
+            self.workspace.reference_pane_id(),
+            self.workspace.active_pane,
+        ) else {
+            return;
+        };
+        if reference == target {
+            return;
+        }
+        let reference_stats = self.pane_runtime.get(&reference).and_then(|runtime| {
+            Some((
+                runtime.display_linear_stats?,
+                runtime.display_linear_rgb_medians?,
+            ))
+        });
+        let target_stats = self.pane_runtime.get(&target).and_then(|runtime| {
+            Some((
+                runtime.display_linear_stats?,
+                runtime.display_linear_rgb_medians?,
+            ))
+        });
+        let (Some((reference_curve, reference_rgb)), Some((target_curve, target_rgb))) =
+            (reference_stats, target_stats)
+        else {
+            return;
+        };
+        let (ev, gamma) = fit_preview_curve(target_curve, reference_curve);
+        let color_gain = fit_color_gains(target_rgb, reference_rgb);
+        if let Some(pane) = self
+            .workspace
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == target)
+        {
+            pane.preview_match_ev = ev;
+            pane.preview_match_gamma = gamma;
+            pane.preview_match_rgb = color_gain;
+            self.ui_state.registration_status = Some(format!(
+                "Pane {} matched to reference · {ev:+.2} EV · γ{gamma:.2} · RGB {:.2}/{:.2}/{:.2}",
+                target.0, color_gain[0], color_gain[1], color_gain[2]
+            ));
+        }
+    }
+
+    fn reset_active_display_match(&mut self) {
+        let Some(target) = self.workspace.active_pane else {
+            return;
+        };
+        if let Some(pane) = self
+            .workspace
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == target)
+        {
+            pane.preview_match_ev = 0.0;
+            pane.preview_match_gamma = 1.0;
+            pane.preview_match_rgb = [1.0; 3];
+        }
+    }
+
     fn begin_exposure_match(&mut self, paint_areas: &[ui_egui::PanePaintArea]) {
         let Some(reference) = self.workspace.reference_pane_id() else {
             return;
@@ -653,8 +754,12 @@ impl DesktopApp {
                 continue;
             }
             if runtime.quality == Some(DecodeQuality::FullRaw)
-                && let (Some(preview), Some(current)) =
-                    (runtime.preview_linear_stats, runtime.display_linear_stats)
+                && let (Some(preview), Some(current), Some(preview_rgb), Some(current_rgb)) = (
+                    runtime.preview_linear_stats,
+                    runtime.display_linear_stats,
+                    runtime.preview_linear_rgb_medians,
+                    runtime.display_linear_rgb_medians,
+                )
                 && let Some(pane) = self
                     .workspace
                     .panes
@@ -664,6 +769,7 @@ impl DesktopApp {
                 let (ev, gamma) = fit_preview_curve(current, preview);
                 pane.preview_match_ev = ev;
                 pane.preview_match_gamma = gamma;
+                pane.preview_match_rgb = fit_color_gains(current_rgb, preview_rgb);
             }
             self.pending_preview_matches.remove(&pane_id);
         }
@@ -708,6 +814,7 @@ impl DesktopApp {
             for pane in &mut self.workspace.panes {
                 pane.preview_match_ev = 0.0;
                 pane.preview_match_gamma = 1.0;
+                pane.preview_match_rgb = [1.0; 3];
             }
         }
     }
@@ -840,17 +947,9 @@ impl DesktopApp {
             points.target_points,
         ) {
             Ok(outcome) => {
-                let rotation_note = if outcome.rotation_degrees.abs() >= 1.0 {
-                    format!(
-                        " · measured rotation {:+.1}° (not applied)",
-                        outcome.rotation_degrees
-                    )
-                } else {
-                    String::new()
-                };
                 self.ui_state.registration_status = Some(format!(
-                    "Pane {} aligned · scale {:.3}×{}",
-                    points.target_pane.0, outcome.scale_ratio, rotation_note
+                    "Pane {} aligned · scale {:.3}× · rotation {:+.1}°",
+                    points.target_pane.0, outcome.scale_ratio, outcome.rotation_degrees
                 ));
             }
             Err(error) => {
@@ -885,6 +984,52 @@ impl DesktopApp {
                 self.start_automatic_registration(pane_id);
             }
             RegistrationRequest::AutomaticAll => self.start_automatic_registration_for_all(),
+            RegistrationRequest::Rotate(pane_id, adjustment) => {
+                match self
+                    .workspace
+                    .adjust_pane_registration_rotation(pane_id, adjustment.degrees())
+                {
+                    Ok(rotation) => {
+                        self.ui_state.registration_status = Some(format!(
+                            "Pane {} rotation adjusted to {rotation:+.1}°",
+                            pane_id.0
+                        ));
+                    }
+                    Err(error) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Could not adjust rotation: {error}"));
+                    }
+                }
+            }
+            RegistrationRequest::SetRotation(pane_id, rotation) => {
+                match self
+                    .workspace
+                    .set_pane_registration_rotation(pane_id, rotation)
+                {
+                    Ok(rotation) => {
+                        self.ui_state.registration_status = Some(format!(
+                            "Pane {} rotation adjusted to {rotation:+.1}°",
+                            pane_id.0
+                        ));
+                    }
+                    Err(error) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Could not adjust rotation: {error}"));
+                    }
+                }
+            }
+            RegistrationRequest::ResetRotation(pane_id) => {
+                match self.workspace.reset_pane_registration_rotation(pane_id) {
+                    Ok(()) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Pane {} rotation reset to 0°", pane_id.0));
+                    }
+                    Err(error) => {
+                        self.ui_state.registration_status =
+                            Some(format!("Could not reset rotation: {error}"));
+                    }
+                }
+            }
             RegistrationRequest::Reset(pane_id) => {
                 self.cancel_automatic_registration_for(pane_id);
                 match self.workspace.reset_pane_registration(pane_id) {
@@ -988,7 +1133,7 @@ impl DesktopApp {
                                 &estimate.diagnostics,
                             );
                             self.ui_state.registration_status = Some(format!(
-                                "Pane {} aligned · {:.0}% confidence · {} features · {}/{} inliers · {:.1}px error · scale {:.3}× · offset {:+.3}, {:+.3}",
+                                "Pane {} aligned · {:.0}% confidence · {} features · {}/{} inliers · {:.1}px error · scale {:.3}× · rotation {:+.1}° · offset {:+.3}, {:+.3}",
                                 result.target_pane.0,
                                 estimate.confidence * 100.0,
                                 estimate.diagnostics.reference_features
@@ -997,6 +1142,7 @@ impl DesktopApp {
                                 estimate.diagnostics.candidate_matches,
                                 estimate.median_error_pixels,
                                 estimate.mapping_scale,
+                                estimate.rotation_degrees,
                                 estimate.translation.x,
                                 estimate.translation.y
                             ));
@@ -1212,10 +1358,12 @@ impl DesktopApp {
                 source_size: source.image_size.unwrap_or([1, 1]),
                 source_pixels_per_physical_pixel: source.viewport.source_pixels_per_physical_pixel
                     as f32,
+                rotation_degrees: source.alignment_rotation_degrees as f32,
                 physical_size: area.physical_size,
                 clip_rect,
                 exposure_ev: source.display_exposure_ev(),
                 gamma: source.display_gamma(),
+                color_gain: source.display_color_gain(),
             },
         ));
     }
@@ -1304,6 +1452,22 @@ impl DesktopApp {
                 ) || runtime.full_raw_pending
             })
     }
+
+    fn automation_status(&self) -> String {
+        if self.is_busy() {
+            return "Frank automation status: busy".to_owned();
+        }
+        if let Some(message) = self.pane_runtime.values().find_map(|runtime| {
+            if let PaneStatus::Error { message } = &runtime.status {
+                Some(message.as_str())
+            } else {
+                runtime.full_raw_error.as_deref()
+            }
+        }) {
+            return format!("Frank automation status: error: {message}");
+        }
+        "Frank automation status: ready".to_owned()
+    }
 }
 
 impl Drop for DesktopApp {
@@ -1316,6 +1480,9 @@ impl Drop for DesktopApp {
 
 impl eframe::App for DesktopApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.test_mode {
+            return;
+        }
         eframe::set_value(
             storage,
             PREFERENCES_KEY,
@@ -1370,6 +1537,12 @@ impl eframe::App for DesktopApp {
         if output.exposure_match_requested {
             self.begin_exposure_match(&output.paint_areas);
         }
+        if output.reference_display_match_requested {
+            self.match_active_display_to_reference();
+        }
+        if output.reference_display_match_reset_requested {
+            self.reset_active_display_match();
+        }
         if output.preview_match_requested {
             self.match_active_raw_to_preview();
         }
@@ -1399,6 +1572,25 @@ impl eframe::App for DesktopApp {
         }
         if let Some(pane_id) = output.replace_image_requested {
             self.open_dialog_for(pane_id);
+        }
+
+        if self.test_mode {
+            egui::Area::new(egui::Id::new("frank-automation-status"))
+                .anchor(Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0))
+                .interactable(false)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::new()
+                        .fill(ui.visuals().panel_fill.gamma_multiply(0.92))
+                        .corner_radius(3.0)
+                        .inner_margin(egui::Margin::symmetric(6, 3))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(self.automation_status())
+                                    .monospace()
+                                    .size(10.0),
+                            );
+                        });
+                });
         }
 
         if self.is_busy() {

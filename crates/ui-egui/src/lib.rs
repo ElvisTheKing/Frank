@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 
-use egui::{Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2};
+use egui::menu::{MenuButton, MenuConfig};
+use egui::{
+    Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo,
+    WidgetType, pos2,
+};
 use renderer_wgpu::{PaneLayout, WorkspaceLayout};
 use serde::{Deserialize, Serialize};
 use viewer_model::{
@@ -317,13 +321,32 @@ pub struct AlignmentDiagnosticOverlay {
     pub matches: Vec<AlignmentDiagnosticMatch>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RegistrationRequest {
     SetReference(PaneId),
     Automatic(PaneId),
     AutomaticAll,
+    Rotate(PaneId, RotationAdjustment),
+    SetRotation(PaneId, f64),
+    ResetRotation(PaneId),
     Reset(PaneId),
     ResetAll,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RotationAdjustment {
+    Left90,
+    Right90,
+}
+
+impl RotationAdjustment {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
+        match self {
+            Self::Left90 => -90.0,
+            Self::Right90 => 90.0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -346,6 +369,8 @@ pub struct UiOutput {
     pub raw_develop_requested: bool,
     pub raw_develop_all_requested: bool,
     pub exposure_match_requested: bool,
+    pub reference_display_match_requested: bool,
+    pub reference_display_match_reset_requested: bool,
     pub preview_match_requested: bool,
     pub preview_match_enabled_changed: Option<bool>,
     pub exposure_match_reset_requested: bool,
@@ -364,6 +389,8 @@ struct ToolbarOutput {
     raw_develop_requested: bool,
     raw_develop_all_requested: bool,
     exposure_match_requested: bool,
+    reference_display_match_requested: bool,
+    reference_display_match_reset_requested: bool,
     preview_match_requested: bool,
     preview_match_enabled_changed: Option<bool>,
     exposure_match_reset_requested: bool,
@@ -571,6 +598,9 @@ pub fn draw_workspace(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiStat
         raw_develop_requested: toolbar_output.raw_develop_requested,
         raw_develop_all_requested: toolbar_output.raw_develop_all_requested,
         exposure_match_requested: toolbar_output.exposure_match_requested,
+        reference_display_match_requested: toolbar_output.reference_display_match_requested,
+        reference_display_match_reset_requested: toolbar_output
+            .reference_display_match_reset_requested,
         preview_match_requested: toolbar_output.preview_match_requested,
         preview_match_enabled_changed: toolbar_output.preview_match_enabled_changed,
         exposure_match_reset_requested: toolbar_output.exposure_match_reset_requested,
@@ -790,8 +820,11 @@ fn paint_comparison_divider(
 #[derive(Debug, PartialEq)]
 struct PixelGridGeometry {
     image_rect: Rect,
+    source_rect: Rect,
     vertical_lines: Vec<f32>,
     horizontal_lines: Vec<f32>,
+    rotation_center: egui::Pos2,
+    rotation_degrees: f64,
 }
 
 fn paint_pixel_grids(
@@ -890,22 +923,38 @@ fn paint_pixel_grid(
     let stroke = Stroke::new((1.0 / pixels_per_point).max(0.5), color);
     for x in grid.vertical_lines {
         painter.line_segment(
-            [
-                pos2(x, grid.image_rect.top()),
-                pos2(x, grid.image_rect.bottom()),
-            ],
+            rotated_grid_line(
+                [
+                    pos2(x, grid.source_rect.top()),
+                    pos2(x, grid.source_rect.bottom()),
+                ],
+                grid.rotation_center,
+                grid.rotation_degrees,
+            ),
             stroke,
         );
     }
     for y in grid.horizontal_lines {
         painter.line_segment(
-            [
-                pos2(grid.image_rect.left(), y),
-                pos2(grid.image_rect.right(), y),
-            ],
+            rotated_grid_line(
+                [
+                    pos2(grid.source_rect.left(), y),
+                    pos2(grid.source_rect.right(), y),
+                ],
+                grid.rotation_center,
+                grid.rotation_degrees,
+            ),
             stroke,
         );
     }
+}
+
+fn rotated_grid_line(
+    line: [egui::Pos2; 2],
+    center: egui::Pos2,
+    rotation_degrees: f64,
+) -> [egui::Pos2; 2] {
+    line.map(|point| center + rotate_vector(point - center, rotation_degrees))
 }
 
 fn pixel_grid_geometry(
@@ -932,13 +981,18 @@ fn pixel_grid_geometry(
         return None;
     }
 
+    let (sin, cos) = pane.alignment_rotation_degrees.to_radians().sin_cos();
+    let visible_source_width =
+        cos.abs() * f64::from(area.physical_size[0]) + sin.abs() * f64::from(area.physical_size[1]);
+    let visible_source_height =
+        sin.abs() * f64::from(area.physical_size[0]) + cos.abs() * f64::from(area.physical_size[1]);
     let vertical_lines = pixel_grid_axis_lines(
         pane.viewport.center.x,
         source_width,
         source_scale,
         area.rect.center().x,
         pixels_per_point_x,
-        area.physical_size[0],
+        visible_source_width,
     )?;
     let horizontal_lines = pixel_grid_axis_lines(
         pane.viewport.center.y,
@@ -946,7 +1000,7 @@ fn pixel_grid_geometry(
         source_scale,
         area.rect.center().y,
         pixels_per_point_y,
-        area.physical_size[1],
+        visible_source_height,
     )?;
     let source_left = source_boundary_to_screen(
         0.0,
@@ -980,20 +1034,28 @@ fn pixel_grid_geometry(
         area.rect.center().y,
         pixels_per_point_y,
     );
-    let image_rect = Rect::from_min_max(
-        pos2(
-            source_left.max(area.rect.left()),
-            source_top.max(area.rect.top()),
-        ),
-        pos2(
-            source_right.min(area.rect.right()),
-            source_bottom.min(area.rect.bottom()),
-        ),
+    let source_rect = Rect::from_min_max(
+        pos2(source_left, source_top),
+        pos2(source_right, source_bottom),
     );
+    let rotation_center = area.rect.center();
+    let rotated_corners = [
+        source_rect.left_top(),
+        source_rect.right_top(),
+        source_rect.right_bottom(),
+        source_rect.left_bottom(),
+    ]
+    .map(|point| {
+        rotation_center + rotate_vector(point - rotation_center, pane.alignment_rotation_degrees)
+    });
+    let image_rect = Rect::from_points(&rotated_corners).intersect(area.rect);
     (!image_rect.is_negative()).then_some(PixelGridGeometry {
         image_rect,
+        source_rect,
         vertical_lines,
         horizontal_lines,
+        rotation_center,
+        rotation_degrees: pane.alignment_rotation_degrees,
     })
 }
 
@@ -1003,10 +1065,10 @@ fn pixel_grid_axis_lines(
     source_scale: f64,
     screen_center: f32,
     pixels_per_point: f64,
-    physical_extent: f32,
+    physical_extent: f64,
 ) -> Option<Vec<f32>> {
     let center_source = center_normalized * f64::from(source_extent);
-    let half_visible_source = f64::from(physical_extent) * source_scale * 0.5;
+    let half_visible_source = physical_extent * source_scale * 0.5;
     let first = (center_source - half_visible_source).ceil().max(0.0) as u32;
     let last = (center_source + half_visible_source)
         .floor()
@@ -1123,20 +1185,48 @@ fn normalized_point_to_screen(
 ) -> Option<egui::Pos2> {
     let [image_width, image_height] = pane.image_size?;
     let pixels_per_point = (area.physical_size[0] / area.rect.width().max(1.0)).max(0.01);
-    let offset_physical = egui::vec2(
-        ((point.x - pane.viewport.center.x) * f64::from(image_width)
-            / pane
-                .viewport
-                .source_pixels_per_physical_pixel
-                .max(viewer_model::Viewport::MIN_SCALE)) as f32,
-        ((point.y - pane.viewport.center.y) * f64::from(image_height)
-            / pane
-                .viewport
-                .source_pixels_per_physical_pixel
-                .max(viewer_model::Viewport::MIN_SCALE)) as f32,
+    let offset_physical = rotate_vector(
+        egui::vec2(
+            ((point.x - pane.viewport.center.x) * f64::from(image_width)
+                / pane
+                    .viewport
+                    .source_pixels_per_physical_pixel
+                    .max(viewer_model::Viewport::MIN_SCALE)) as f32,
+            ((point.y - pane.viewport.center.y) * f64::from(image_height)
+                / pane
+                    .viewport
+                    .source_pixels_per_physical_pixel
+                    .max(viewer_model::Viewport::MIN_SCALE)) as f32,
+        ),
+        pane.alignment_rotation_degrees,
     );
     let position = area.rect.center() + offset_physical / pixels_per_point;
     area.rect.contains(position).then_some(position)
+}
+
+fn rotate_vector(vector: Vec2, degrees: f64) -> Vec2 {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    egui::vec2(
+        (cos * f64::from(vector.x) - sin * f64::from(vector.y)) as f32,
+        (sin * f64::from(vector.x) + cos * f64::from(vector.y)) as f32,
+    )
+}
+
+fn screen_offset_to_normalized(
+    offset_physical: Vec2,
+    viewport: viewer_model::Viewport,
+    image_size: [u32; 2],
+    rotation_degrees: f64,
+) -> NormalizedPoint {
+    let source_offset = rotate_vector(offset_physical, -rotation_degrees);
+    NormalizedPoint {
+        x: viewport.center.x
+            + f64::from(source_offset.x) * viewport.source_pixels_per_physical_pixel
+                / f64::from(image_size[0].max(1)),
+        y: viewport.center.y
+            + f64::from(source_offset.y) * viewport.source_pixels_per_physical_pixel
+                / f64::from(image_size[1].max(1)),
+    }
 }
 
 fn rect_to_physical(rect: Rect, pixels_per_point: f32) -> [f32; 4] {
@@ -1152,6 +1242,44 @@ fn toolbar_group_separator(ui: &mut Ui) {
     ui.add_space(2.0);
     ui.separator();
     ui.add_space(2.0);
+}
+
+fn persistent_toolbar_menu<R>(
+    ui: &mut Ui,
+    title: &str,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::Response {
+    MenuButton::new(title)
+        .config(persistent_toolbar_menu_config())
+        .ui(ui, contents)
+        .0
+}
+
+fn persistent_toolbar_menu_config() -> MenuConfig {
+    MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+}
+
+fn rotation_button(ui: &mut Ui, label: &str, hover_text: &str) -> egui::Response {
+    let (fill, border, text) = if ui.visuals().dark_mode {
+        (
+            Color32::from_rgb(47, 55, 63),
+            Color32::from_rgb(100, 112, 124),
+            Color32::from_rgb(242, 245, 247),
+        )
+    } else {
+        (
+            Color32::from_rgb(226, 231, 236),
+            Color32::from_rgb(140, 151, 162),
+            Color32::from_rgb(28, 34, 40),
+        )
+    };
+    ui.add_sized(
+        [ui.available_width(), 28.0],
+        egui::Button::new(egui::RichText::new(label).strong().color(text))
+            .fill(fill)
+            .stroke(Stroke::new(1.0, border)),
+    )
+    .on_hover_text(hover_text)
 }
 
 const fn sync_mode_short_label(mode: SyncMode) -> &'static str {
@@ -1199,7 +1327,7 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
             state.focused_pane = None;
             output.added_panes.push(pane_id);
         }
-        ui.menu_button("Layout", |ui| {
+        persistent_toolbar_menu(ui, "Layout", |ui| {
             for mode in LayoutMode::ALL {
                 ui.selectable_value(&mut workspace.layout_mode, mode, mode.label());
             }
@@ -1229,7 +1357,7 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
             if ui.checkbox(&mut synchronized, "Sync").changed() {
                 workspace.set_synchronized(synchronized);
             }
-            ui.menu_button(sync_mode_short_label(workspace.sync_mode), |ui| {
+            persistent_toolbar_menu(ui, sync_mode_short_label(workspace.sync_mode), |ui| {
                 ui.strong("Synchronized navigation");
                 for mode in SyncMode::ALL {
                     ui.selectable_value(&mut workspace.sync_mode, mode, mode.label());
@@ -1237,7 +1365,6 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                 ui.separator();
                 if ui.button("Reset alignment").clicked() {
                     workspace.reset_sync_adjustments();
-                    ui.close();
                 }
             });
         });
@@ -1257,13 +1384,15 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     .iter()
                     .any(|pane| pane.id == active && pane.image_id.is_some())
         });
-        ui.menu_button(
+        persistent_toolbar_menu(
+            ui,
             if state.registration_busy {
                 "Aligning…"
             } else {
                 "Align"
             },
             |ui| {
+                ui.set_min_width(310.0);
                 if state.registration_busy {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -1296,7 +1425,6 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     ui.weak("Drag to pan or scroll to zoom before clicking.");
                     if ui.button("Cancel manual alignment").clicked() {
                         state.manual_registration = None;
-                        ui.close();
                     }
                     return;
                 }
@@ -1320,7 +1448,6 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     && let Some(active) = active_pane
                 {
                     output.registration_request = Some(RegistrationRequest::SetReference(active));
-                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -1332,7 +1459,6 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     && let Some(active) = active_pane
                 {
                     output.registration_request = Some(RegistrationRequest::Automatic(active));
-                    ui.close();
                 }
                 if ui
                     .add_enabled(
@@ -1349,7 +1475,6 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     .clicked()
                 {
                     output.registration_request = Some(RegistrationRequest::AutomaticAll);
-                    ui.close();
                 }
                 if ui
                     .add_enabled(
@@ -1360,8 +1485,113 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     && let (Some(reference), Some(target)) = (reference_pane, active_pane)
                 {
                     state.start_manual_registration(reference, target);
-                    ui.close();
                 }
+                ui.separator();
+                ui.strong("Match diagnostics");
+                let alignment_diagnostics_available = state.alignment_quality.is_some();
+                ui.add_enabled_ui(alignment_diagnostics_available, |ui| {
+                    ui.checkbox(
+                        &mut state.show_alignment_diagnostics,
+                        "Show match diagnostics",
+                    )
+                    .on_hover_text("Overlay accepted and rejected feature matches on the images");
+                });
+                if !alignment_diagnostics_available {
+                    ui.weak("Run Auto align to collect feature-match diagnostics.");
+                } else if state.show_alignment_diagnostics {
+                    ui.weak("Green = accepted · orange = rejected");
+                }
+                ui.separator();
+                ui.add_enabled_ui(active_has_image, |ui| {
+                    let current_rotation = active_pane
+                        .and_then(|active| {
+                            workspace
+                                .panes
+                                .iter()
+                                .find(|pane| pane.id == active)
+                                .map(|pane| pane.alignment_rotation_degrees)
+                        })
+                        .unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Rotation")
+                                .strong()
+                                .color(ui.visuals().text_color()),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.monospace(format!("{current_rotation:+.1}°"));
+                        });
+                    });
+                    ui.weak("Quarter turns");
+                    ui.columns(2, |columns| {
+                        for (column, label, hover_text, adjustment) in [
+                            (
+                                0,
+                                "Rotate left 90°",
+                                "Rotate the active pane 90° counter-clockwise",
+                                RotationAdjustment::Left90,
+                            ),
+                            (
+                                1,
+                                "Rotate right 90°",
+                                "Rotate the active pane 90° clockwise",
+                                RotationAdjustment::Right90,
+                            ),
+                        ] {
+                            if rotation_button(&mut columns[column], label, hover_text).clicked()
+                                && let Some(active) = active_pane
+                            {
+                                output.registration_request =
+                                    Some(RegistrationRequest::Rotate(active, adjustment));
+                            }
+                        }
+                    });
+                    ui.add_space(3.0);
+                    let quarter_rotation = (current_rotation / 90.0).round() * 90.0;
+                    let mut fine_rotation = current_rotation - quarter_rotation;
+                    ui.horizontal(|ui| {
+                        ui.weak("Fine tune · offset from nearest 90°");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.monospace(format!("{fine_rotation:+.1}°"));
+                        });
+                    });
+                    let slider_width = ui.available_width();
+                    let slider_response = ui
+                        .scope(|ui| {
+                            ui.spacing_mut().slider_width = slider_width;
+                            ui.add(
+                                egui::Slider::new(&mut fine_rotation, -45.0..=45.0)
+                                    .step_by(0.1)
+                                    .show_value(false),
+                            )
+                        })
+                        .inner
+                        .on_hover_text(
+                            "Fine rotation around the nearest quarter turn; use arrow keys for 0.1° steps",
+                        );
+                    slider_response.widget_info(|| {
+                        WidgetInfo::slider(ui.is_enabled(), fine_rotation, "Fine rotation")
+                    });
+                    if slider_response.changed()
+                        && let Some(active) = active_pane
+                    {
+                        output.registration_request = Some(RegistrationRequest::SetRotation(
+                            active,
+                            quarter_rotation + fine_rotation,
+                        ));
+                    }
+                    if ui
+                        .add_enabled(
+                            current_rotation.abs() >= 0.05,
+                            egui::Button::new("Reset rotation to 0°"),
+                        )
+                        .clicked()
+                        && let Some(active) = active_pane
+                    {
+                        output.registration_request =
+                            Some(RegistrationRequest::ResetRotation(active));
+                    }
+                });
                 ui.separator();
                 if ui
                     .add_enabled(
@@ -1372,11 +1602,9 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     && let Some(active) = active_pane
                 {
                     output.registration_request = Some(RegistrationRequest::Reset(active));
-                    ui.close();
                 }
                 if ui.button("Reset all alignments").clicked() {
                     output.registration_request = Some(RegistrationRequest::ResetAll);
-                    ui.close();
                 }
                 if let Some(quality) = &state.alignment_quality {
                     ui.separator();
@@ -1396,14 +1624,6 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                             "Confidence: {confidence:.0}% · median error {error:.1}px"
                         ));
                     }
-                    ui.checkbox(
-                        &mut state.show_alignment_diagnostics,
-                        "Show match diagnostics",
-                    )
-                    .on_hover_text("Overlay accepted and rejected feature matches on the images");
-                    if state.show_alignment_diagnostics {
-                        ui.weak("Green = accepted · orange = rejected");
-                    }
                 }
                 if let Some(status) = &state.registration_status {
                     ui.separator();
@@ -1412,7 +1632,7 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
             },
         );
         toolbar_group_separator(ui);
-        ui.menu_button("RAW", |ui| {
+        persistent_toolbar_menu(ui, "RAW", |ui| {
             ui.strong("Full-resolution RAW");
             if ui
                 .checkbox(
@@ -1420,7 +1640,7 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     "Match embedded JPEG automatically",
                 )
                 .on_hover_text(
-                    "Apply an instant, non-destructive GPU tone match whenever a full RAW loads",
+                    "Apply an instant, non-destructive GPU tone and color match whenever a full RAW loads",
                 )
                 .changed()
             {
@@ -1437,25 +1657,22 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     .clicked()
                 {
                     output.raw_develop_requested = true;
-                    ui.close();
                 }
                 if ui
                     .add_enabled(state.has_raw_images, egui::Button::new("Develop all RAWs"))
                     .clicked()
                 {
                     output.raw_develop_all_requested = true;
-                    ui.close();
                 }
             });
             ui.add_enabled_ui(state.active_is_raw, |ui| {
                 if state.match_raw_to_preview && ui.button("Re-match active to preview").clicked() {
                     output.preview_match_requested = true;
-                    ui.close();
                 }
             });
         });
         ui.add_enabled_ui(active_has_image, |ui| {
-            ui.menu_button("Exposure", |ui| {
+            persistent_toolbar_menu(ui, "Exposure", |ui| {
                 let active_index = workspace
                     .active_pane
                     .and_then(|active| workspace.panes.iter().position(|pane| pane.id == active));
@@ -1477,13 +1694,33 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
                     }
                     ui.checkbox(&mut state.sync_adjustments, "Apply to linked panes");
                     ui.separator();
+                    if ui
+                        .add_enabled(
+                            active_is_target,
+                            egui::Button::new("Match active tone + color to reference"),
+                        )
+                        .on_hover_text(
+                            "Match whole-image brightness, contrast, and neutral color balance",
+                        )
+                        .clicked()
+                    {
+                        output.reference_display_match_requested = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            active_is_target,
+                            egui::Button::new("Clear active tone + color match"),
+                        )
+                        .clicked()
+                    {
+                        output.reference_display_match_reset_requested = true;
+                    }
+                    ui.separator();
                     if ui.button("Normalize visible views to reference").clicked() {
                         output.exposure_match_requested = true;
-                        ui.close();
                     }
                     if ui.button("Clear normalization").clicked() {
                         output.exposure_match_reset_requested = true;
-                        ui.close();
                     }
                     ui.horizontal(|ui| {
                         if ui.button("Reset active").clicked() {
@@ -1509,7 +1746,7 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
         {
             state.show_pane_controls = !clean_view;
         }
-        ui.menu_button("...", |ui| {
+        persistent_toolbar_menu(ui, "...", |ui| {
             ui.strong("Theme");
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut state.theme, AppTheme::Light, "Light");
@@ -1538,7 +1775,6 @@ fn draw_toolbar(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) -> 
             ui.checkbox(&mut state.show_pixel_grid, "Pixel grid")
                 .on_hover_text("Show source-pixel boundaries at 600% magnification and closer");
         })
-        .response
         .on_hover_text("Display and title settings");
     });
     output
@@ -1785,6 +2021,7 @@ fn draw_pane(
     let pane = &workspace.panes[pane_index];
     let image_size = pane.image_size;
     let viewport = pane.viewport;
+    let rotation_degrees = pane.alignment_rotation_degrees;
     let has_image = pane.image_id.is_some();
     let linked = pane.linked;
     let note = pane.note.clone();
@@ -1825,6 +2062,13 @@ fn draw_pane(
             } else {
                 "Set as reference · R sets the active pane"
             });
+        reference_response.widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Button,
+                has_image,
+                format!("Pane {}: set as reference", pane_id.0),
+            )
+        });
         let reference_fill = if is_reference {
             colors.active
         } else if reference_response.hovered() && has_image {
@@ -1925,6 +2169,14 @@ fn draw_pane(
             } else {
                 "Add this pane to synchronized pan and zoom"
             });
+        link_response.widget_info(|| {
+            WidgetInfo::selected(
+                WidgetType::Button,
+                true,
+                linked,
+                format!("Pane {}: synchronized navigation", pane_id.0),
+            )
+        });
         if link_response.clicked() {
             let _ = workspace.toggle_pane_linked(pane_id);
         }
@@ -1944,6 +2196,17 @@ fn draw_pane(
             } else {
                 "Load an image before maximizing this pane"
             });
+        focus_response.widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Button,
+                has_image || pane_is_focused,
+                if pane_is_focused {
+                    format!("Pane {}: show all panes", pane_id.0)
+                } else {
+                    format!("Pane {}: maximize", pane_id.0)
+                },
+            )
+        });
         if focus_response.hovered() && (has_image || pane_is_focused) {
             ui.painter().rect_filled(focus_rect, 2.0, colors.note_hover);
         }
@@ -1974,6 +2237,13 @@ fn draw_pane(
             )
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text("Close this pane");
+        close_response.widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Button,
+                workspace.panes.len() > MIN_PANES,
+                format!("Pane {}: close pane", pane_id.0),
+            )
+        });
         ui.painter().text(
             close_rect.center(),
             Align2::CENTER_CENTER,
@@ -2001,6 +2271,17 @@ fn draw_pane(
             } else {
                 "Edit image note"
             });
+        note_response.widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Button,
+                true,
+                if note.is_empty() {
+                    format!("Pane {}: add image note", pane_id.0)
+                } else {
+                    format!("Pane {}: edit image note", pane_id.0)
+                },
+            )
+        });
         let note_background = if note_response.hovered() {
             colors.note_hover
         } else if note.is_empty() {
@@ -2052,6 +2333,13 @@ fn draw_pane(
                 CursorIcon::Grab
             })
             .on_hover_text("Drag to reorder · double-click to edit the image note");
+        title_response.widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Button,
+                true,
+                format!("Pane {} title: {pane_title}", pane_id.0),
+            )
+        });
         if title_response.clicked() || title_response.drag_started() {
             let _ = workspace.set_active(pane_id);
         }
@@ -2102,6 +2390,13 @@ fn draw_pane(
         ui.id().with(("pane", pane_id.0)),
         Sense::click_and_drag(),
     );
+    response.widget_info(|| {
+        WidgetInfo::labeled(
+            WidgetType::Button,
+            true,
+            format!("Pane {} image viewport: {pane_title}", pane_id.0),
+        )
+    });
     if response.secondary_clicked() {
         let _ = workspace.set_active(pane_id);
     }
@@ -2276,19 +2571,13 @@ fn draw_pane(
         && registration_expected
         && !split_interaction
         && !focus_double_clicked
-        && let Some([image_width, image_height]) = image_size
+        && let Some(image_size) = image_size
     {
         let pointer = response.hover_pos().unwrap_or(image_rect.center());
         let pointer_delta = (pointer - image_rect.center()) * pixels_per_point;
-        let point = NormalizedPoint {
-            x: viewport.center.x
-                + f64::from(pointer_delta.x) * viewport.source_pixels_per_physical_pixel
-                    / f64::from(image_width.max(1)),
-            y: viewport.center.y
-                + f64::from(pointer_delta.y) * viewport.source_pixels_per_physical_pixel
-                    / f64::from(image_height.max(1)),
-        }
-        .clamped();
+        let point =
+            screen_offset_to_normalized(pointer_delta, viewport, image_size, rotation_degrees)
+                .clamped();
         output.manual_registration_completed = state.record_registration_point(pane_id, point);
     } else if !focus_double_clicked
         && state.manual_registration.is_none()
@@ -2300,7 +2589,7 @@ fn draw_pane(
         && !split_interaction
         && let Some([image_width, image_height]) = image_size
     {
-        let delta = response.drag_motion() * pixels_per_point;
+        let delta = rotate_vector(response.drag_motion() * pixels_per_point, -rotation_degrees);
         let normalized_x = f64::from(delta.x) * viewport.source_pixels_per_physical_pixel
             / f64::from(image_width.max(1));
         let normalized_y = f64::from(delta.y) * viewport.source_pixels_per_physical_pixel
@@ -2308,7 +2597,7 @@ fn draw_pane(
         workspace.pan_pane(pane_id, normalized_x, normalized_y);
     }
     if response.hovered()
-        && let Some([image_width, image_height]) = image_size
+        && let Some(image_size) = image_size
     {
         let (pinch_factor, scroll_y) =
             ui.input(|input| (input.zoom_delta(), input.smooth_scroll_delta.y));
@@ -2320,15 +2609,9 @@ fn draw_pane(
         if (factor - 1.0).abs() > 0.0001 {
             let pointer = response.hover_pos().unwrap_or(image_rect.center());
             let pointer_delta = (pointer - image_rect.center()) * pixels_per_point;
-            let anchor = NormalizedPoint {
-                x: viewport.center.x
-                    + f64::from(pointer_delta.x) * viewport.source_pixels_per_physical_pixel
-                        / f64::from(image_width.max(1)),
-                y: viewport.center.y
-                    + f64::from(pointer_delta.y) * viewport.source_pixels_per_physical_pixel
-                        / f64::from(image_height.max(1)),
-            }
-            .clamped();
+            let anchor =
+                screen_offset_to_normalized(pointer_delta, viewport, image_size, rotation_degrees)
+                    .clamped();
             workspace.zoom_pane(pane_id, f64::from(factor), anchor);
         }
     }
@@ -2567,22 +2850,24 @@ fn grid_rects(rect: Rect, pane_count: usize, layout_mode: LayoutMode) -> Vec<Rec
 }
 
 fn update_fit_scale_for_area(workspace: &mut Workspace, pane_id: PaneId, physical_size: [f32; 2]) {
-    let Some([image_width, image_height]) = workspace
-        .panes
-        .iter()
-        .find(|pane| pane.id == pane_id)
-        .and_then(|pane| pane.image_size)
-    else {
+    let Some(pane) = workspace.panes.iter().find(|pane| pane.id == pane_id) else {
         return;
     };
-    let fit_scale = (f64::from(image_width) / f64::from(physical_size[0].max(1.0)))
-        .max(f64::from(image_height) / f64::from(physical_size[1].max(1.0)));
+    let Some([image_width, image_height]) = pane.image_size else {
+        return;
+    };
+    let (sin, cos) = pane.alignment_rotation_degrees.to_radians().sin_cos();
+    let rotated_width = cos.abs() * f64::from(image_width) + sin.abs() * f64::from(image_height);
+    let rotated_height = sin.abs() * f64::from(image_width) + cos.abs() * f64::from(image_height);
+    let fit_scale = (rotated_width / f64::from(physical_size[0].max(1.0)))
+        .max(rotated_height / f64::from(physical_size[1].max(1.0)));
     workspace.update_pane_fit_scale(pane_id, fit_scale);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::{Harness, kittest::Queryable as _};
 
     #[test]
     fn an_empty_grid_has_no_rectangles() {
@@ -2600,6 +2885,20 @@ mod tests {
     #[test]
     fn raw_preview_matching_is_enabled_by_default() {
         assert!(UiState::default().match_raw_to_preview);
+    }
+
+    #[test]
+    fn manual_rotation_controls_cover_both_quarter_turns() {
+        assert_eq!(RotationAdjustment::Left90.degrees(), -90.0);
+        assert_eq!(RotationAdjustment::Right90.degrees(), 90.0);
+    }
+
+    #[test]
+    fn toolbar_dropdowns_close_only_when_clicking_outside() {
+        assert!(matches!(
+            persistent_toolbar_menu_config().close_behavior,
+            egui::PopupCloseBehavior::CloseOnClickOutside
+        ));
     }
 
     #[test]
@@ -2727,6 +3026,29 @@ mod tests {
         assert!((grid.vertical_lines[18] - 90.0).abs() < 0.001);
         assert!((grid.horizontal_lines[0] - 0.0).abs() < 0.001);
         assert!((grid.horizontal_lines[10] - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn pixel_grid_rotates_with_registered_images() {
+        let mut workspace = Workspace::demo();
+        let pane = &mut workspace.panes[0];
+        pane.image_size = Some([20, 10]);
+        pane.viewport.source_pixels_per_physical_pixel = 0.1;
+        pane.alignment_rotation_degrees = 90.0;
+        let area = PanePaintArea {
+            pane_id: pane.id,
+            rect: Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(100.0, 100.0)),
+            physical_size: [100.0, 100.0],
+        };
+
+        let grid = pixel_grid_geometry(pane, &area).expect("rotated grid remains available");
+        assert_eq!(grid.image_rect, area.rect);
+        let rotated =
+            rotated_grid_line([pos2(0.0, 50.0), pos2(100.0, 50.0)], pos2(50.0, 50.0), 90.0);
+        assert!((rotated[0].x - 50.0).abs() < 0.001);
+        assert!((rotated[0].y - 0.0).abs() < 0.001);
+        assert!((rotated[1].x - 50.0).abs() < 0.001);
+        assert!((rotated[1].y - 100.0).abs() < 0.001);
     }
 
     #[test]
@@ -2890,6 +3212,71 @@ mod tests {
                 .viewport
                 .fit_source_pixels_per_physical_pixel
                 > 1.0
+        );
+    }
+
+    #[test]
+    fn alignment_controls_are_semantically_drivable() {
+        struct HarnessState {
+            workspace: Workspace,
+            ui_state: UiState,
+            registration_request: Option<RegistrationRequest>,
+        }
+
+        let mut workspace = Workspace::demo();
+        for (index, pane) in workspace.panes.iter_mut().take(2).enumerate() {
+            pane.image_id = Some(viewer_model::ImageId(index as u64 + 1));
+            pane.image_size = Some([640, 480]);
+        }
+        workspace.active_pane = Some(PaneId(2));
+        let state = HarnessState {
+            workspace,
+            ui_state: UiState {
+                theme: AppTheme::Dark,
+                alignment_quality: Some(AlignmentQuality {
+                    target_pane: PaneId(2),
+                    succeeded: true,
+                    confidence: Some(0.9),
+                    reference_features: 120,
+                    target_features: 110,
+                    candidate_matches: 48,
+                    inliers: 36,
+                    median_error_pixels: Some(0.8),
+                }),
+                ..UiState::default()
+            },
+            registration_request: None,
+        };
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1_440.0, 900.0))
+            .with_pixels_per_point(1.0)
+            .build_ui_state(
+                |ui, state: &mut HarnessState| {
+                    let output = draw_workspace(ui, &mut state.workspace, &mut state.ui_state);
+                    if output.registration_request.is_some() {
+                        state.registration_request = output.registration_request;
+                    }
+                },
+                state,
+            );
+
+        harness.get_by_label("Pane 2 image viewport: Pane 2");
+        harness.get_by_label("Pane 2: maximize");
+        harness.get_by_label("Align").click();
+        harness.run();
+        harness.get_by_label("Show match diagnostics").click();
+        harness.run();
+        assert!(harness.state().ui_state.show_alignment_diagnostics);
+        harness.get_by_label("Fine rotation");
+        harness.get_by_label("Rotate right 90°").click();
+        harness.run();
+
+        assert_eq!(
+            harness.state().registration_request,
+            Some(RegistrationRequest::Rotate(
+                PaneId(2),
+                RotationAdjustment::Right90
+            ))
         );
     }
 

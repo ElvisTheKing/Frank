@@ -13,6 +13,9 @@
 /dist/
 /bundle/
 
+# Local UI-test screenshots, trees, and action logs.
+/artifacts/
+
 # Local camera corpus: never commit user photographs.
 /data/*
 !/data/README.md

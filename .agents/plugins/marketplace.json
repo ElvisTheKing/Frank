@@ -1,0 +1,20 @@
+{
+  "name": "frank-development",
+  "interface": {
+    "displayName": "Frank Development"
+  },
+  "plugins": [
+    {
+      "name": "frank-ui-control",
+      "source": {
+        "source": "local",
+        "path": "./plugins/frank-ui-control"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

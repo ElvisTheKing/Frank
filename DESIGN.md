@@ -524,6 +524,8 @@ Camera support is decoder-and-model-specific, not extension-specific. Publish a 
 - Rust unit/property tests for coordinates, cache keys, limits, session migration, title formatting, and job cancellation.
 - Golden pixel tests for orientation, ICC conversion, TIFF sample conversion, RAW recipe, and tile borders.
 - Renderer golden screenshots on a deterministic software GPU where possible.
+- AccessKit-driven `egui_kittest` interaction tests for stable control semantics and emitted UI actions.
+- Live eframe/WGPU tests in an Xvfb and Mesa Lavapipe container, driven through egui inspection with screenshots, widget trees, and action logs retained as failure artifacts.
 - State-machine and event-injection integration tests for pan, zoom anchor, temporary independent mode, reorder, notes, and recovery.
 - Fuzz file probes and TIFF/metadata parsing; preserve every crashing file as a regression fixture when licensing permits.
 - Cross-platform CI builds on Windows, macOS, and Linux; real-GPU smoke tests before release.

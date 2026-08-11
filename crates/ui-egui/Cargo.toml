@@ -10,3 +10,6 @@ egui.workspace = true
 renderer-wgpu.workspace = true
 serde.workspace = true
 viewer-model.workspace = true
+
+[dev-dependencies]
+egui_kittest = "0.35.0"

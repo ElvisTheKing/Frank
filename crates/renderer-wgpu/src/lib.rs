@@ -98,11 +98,14 @@ pub struct PaneRenderState {
     /// coordinate space so pan and zoom do not jump when full RAW replaces it.
     pub source_size: [u32; 2],
     pub source_pixels_per_physical_pixel: f32,
+    /// Clockwise display rotation around the pane center.
+    pub rotation_degrees: f32,
     pub physical_size: [f32; 2],
     /// Visible region in physical pane pixels: `[left, top, right, bottom]`.
     pub clip_rect: [f32; 4],
     pub exposure_ev: f32,
     pub gamma: f32,
+    pub color_gain: [f32; 3],
 }
 
 pub struct TileRenderer {
@@ -377,7 +380,7 @@ impl ImageRenderResources {
         let Some(image) = self.images.get(&state.image_id) else {
             return;
         };
-        let (vertices, tile_indices) = build_visible_vertices(image, state);
+        let (vertices, draws) = build_visible_vertices(image, state);
         let required_size = (vertices.len().max(1) * size_of::<Vertex>()) as wgpu::BufferAddress;
         let pane = self
             .panes
@@ -400,7 +403,11 @@ impl ImageRenderResources {
         queue.write_buffer(
             &pane.adjustment_buffer,
             0,
-            bytemuck::bytes_of(&DisplayAdjustment::new(state.exposure_ev, state.gamma)),
+            bytemuck::bytes_of(&DisplayAdjustment::new(
+                state.exposure_ev,
+                state.gamma,
+                state.color_gain,
+            )),
         );
         if pane.capacity < required_size {
             pane.vertex_buffer = create_vertex_buffer(device, required_size.next_power_of_two());
@@ -409,14 +416,7 @@ impl ImageRenderResources {
         if !vertices.is_empty() {
             queue.write_buffer(&pane.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
         }
-        pane.draws = tile_indices
-            .into_iter()
-            .enumerate()
-            .map(|(draw_index, tile_index)| DrawCommand {
-                tile_index,
-                vertices: (draw_index as u32 * 6)..(draw_index as u32 * 6 + 6),
-            })
-            .collect();
+        pane.draws = draws;
     }
 
     fn paint_pane(&self, render_pass: &mut wgpu::RenderPass<'_>, state: PaneRenderState) {
@@ -545,9 +545,12 @@ fn upload_tile(
     }
 }
 
-fn build_visible_vertices(image: &GpuImage, state: PaneRenderState) -> (Vec<Vertex>, Vec<usize>) {
+fn build_visible_vertices(
+    image: &GpuImage,
+    state: PaneRenderState,
+) -> (Vec<Vertex>, Vec<DrawCommand>) {
     let mut vertices = Vec::with_capacity(image.tiles.len() * 6);
-    let mut tile_indices = Vec::with_capacity(image.tiles.len());
+    let mut draws = Vec::with_capacity(image.tiles.len());
 
     for (tile_index, tile) in image.tiles.iter().enumerate() {
         if let Some(tile_vertices) = visible_tile_vertices(
@@ -555,18 +558,22 @@ fn build_visible_vertices(image: &GpuImage, state: PaneRenderState) -> (Vec<Vert
             [tile.x, tile.y, tile.width, tile.height],
             state,
         ) {
+            let start = vertices.len() as u32;
             vertices.extend_from_slice(&tile_vertices);
-            tile_indices.push(tile_index);
+            draws.push(DrawCommand {
+                tile_index,
+                vertices: start..vertices.len() as u32,
+            });
         }
     }
-    (vertices, tile_indices)
+    (vertices, draws)
 }
 
 fn visible_tile_vertices(
     image_size: [u32; 2],
     tile: [u32; 4],
     state: PaneRenderState,
-) -> Option<[Vertex; 6]> {
+) -> Option<Vec<Vertex>> {
     let pane_width = state.physical_size[0].max(1.0);
     let pane_height = state.physical_size[1].max(1.0);
     let source_scale = state.source_pixels_per_physical_pixel.max(1.0 / 64.0);
@@ -574,41 +581,140 @@ fn visible_tile_vertices(
     let scale_y = source_scale * image_size[1] as f32 / state.source_size[1].max(1) as f32;
     let center_x = state.center[0] * image_size[0] as f32;
     let center_y = state.center[1] * image_size[1] as f32;
-    let visible_left = center_x - pane_width * scale_x * 0.5;
-    let visible_top = center_y - pane_height * scale_y * 0.5;
-    let left_px = (tile[0] as f32 - visible_left) / scale_x;
-    let top_px = (tile[1] as f32 - visible_top) / scale_y;
-    let right_px = left_px + tile[2] as f32 / scale_x;
-    let bottom_px = top_px + tile[3] as f32 / scale_y;
+    let pane_center = [pane_width * 0.5, pane_height * 0.5];
+    let source_to_screen = |source: [f32; 2]| {
+        let unrotated = [
+            pane_center[0] + (source[0] - center_x) / scale_x,
+            pane_center[1] + (source[1] - center_y) / scale_y,
+        ];
+        rotate_screen_point(unrotated, pane_center, state.rotation_degrees)
+    };
+    let left = tile[0] as f32;
+    let top = tile[1] as f32;
+    let right = left + tile[2] as f32;
+    let bottom = top + tile[3] as f32;
+    let mut polygon = vec![
+        ClipVertex::new(source_to_screen([left, top]), [0.0, 0.0]),
+        ClipVertex::new(source_to_screen([left, bottom]), [0.0, 1.0]),
+        ClipVertex::new(source_to_screen([right, bottom]), [1.0, 1.0]),
+        ClipVertex::new(source_to_screen([right, top]), [1.0, 0.0]),
+    ];
     let clip_left = state.clip_rect[0].clamp(0.0, pane_width);
     let clip_top = state.clip_rect[1].clamp(0.0, pane_height);
     let clip_right = state.clip_rect[2].clamp(clip_left, pane_width);
     let clip_bottom = state.clip_rect[3].clamp(clip_top, pane_height);
-    let clipped_left_px = left_px.max(clip_left);
-    let clipped_top_px = top_px.max(clip_top);
-    let clipped_right_px = right_px.min(clip_right);
-    let clipped_bottom_px = bottom_px.min(clip_bottom);
-    if clipped_right_px <= clipped_left_px || clipped_bottom_px <= clipped_top_px {
+    for edge in [
+        ClipEdge::Left(clip_left),
+        ClipEdge::Right(clip_right),
+        ClipEdge::Top(clip_top),
+        ClipEdge::Bottom(clip_bottom),
+    ] {
+        polygon = clip_polygon(&polygon, edge);
+    }
+    if polygon.len() < 3 {
         return None;
     }
-    let tile_screen_width = (right_px - left_px).max(f32::EPSILON);
-    let tile_screen_height = (bottom_px - top_px).max(f32::EPSILON);
-    let u0 = (clipped_left_px - left_px) / tile_screen_width;
-    let v0 = (clipped_top_px - top_px) / tile_screen_height;
-    let u1 = (clipped_right_px - left_px) / tile_screen_width;
-    let v1 = (clipped_bottom_px - top_px) / tile_screen_height;
-    let left = clipped_left_px / pane_width * 2.0 - 1.0;
-    let right = clipped_right_px / pane_width * 2.0 - 1.0;
-    let top = 1.0 - clipped_top_px / pane_height * 2.0;
-    let bottom = 1.0 - clipped_bottom_px / pane_height * 2.0;
-    Some([
-        Vertex::new(left, top, u0, v0),
-        Vertex::new(left, bottom, u0, v1),
-        Vertex::new(right, bottom, u1, v1),
-        Vertex::new(left, top, u0, v0),
-        Vertex::new(right, bottom, u1, v1),
-        Vertex::new(right, top, u1, v0),
-    ])
+    let to_vertex = |vertex: ClipVertex| {
+        Vertex::new(
+            vertex.position[0] / pane_width * 2.0 - 1.0,
+            1.0 - vertex.position[1] / pane_height * 2.0,
+            vertex.uv[0],
+            vertex.uv[1],
+        )
+    };
+    let mut vertices = Vec::with_capacity((polygon.len() - 2) * 3);
+    for index in 1..polygon.len() - 1 {
+        vertices.push(to_vertex(polygon[0]));
+        vertices.push(to_vertex(polygon[index]));
+        vertices.push(to_vertex(polygon[index + 1]));
+    }
+    Some(vertices)
+}
+
+fn rotate_screen_point(point: [f32; 2], center: [f32; 2], degrees: f32) -> [f32; 2] {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let x = point[0] - center[0];
+    let y = point[1] - center[1];
+    [center[0] + cos * x - sin * y, center[1] + sin * x + cos * y]
+}
+
+#[derive(Clone, Copy)]
+struct ClipVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+}
+
+impl ClipVertex {
+    const fn new(position: [f32; 2], uv: [f32; 2]) -> Self {
+        Self { position, uv }
+    }
+
+    fn interpolate(self, other: Self, amount: f32) -> Self {
+        Self {
+            position: [
+                self.position[0] + (other.position[0] - self.position[0]) * amount,
+                self.position[1] + (other.position[1] - self.position[1]) * amount,
+            ],
+            uv: [
+                self.uv[0] + (other.uv[0] - self.uv[0]) * amount,
+                self.uv[1] + (other.uv[1] - self.uv[1]) * amount,
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ClipEdge {
+    Left(f32),
+    Right(f32),
+    Top(f32),
+    Bottom(f32),
+}
+
+impl ClipEdge {
+    fn inside(self, vertex: ClipVertex) -> bool {
+        match self {
+            Self::Left(value) => vertex.position[0] >= value,
+            Self::Right(value) => vertex.position[0] <= value,
+            Self::Top(value) => vertex.position[1] >= value,
+            Self::Bottom(value) => vertex.position[1] <= value,
+        }
+    }
+
+    fn intersection(self, from: ClipVertex, to: ClipVertex) -> ClipVertex {
+        let (axis, value) = match self {
+            Self::Left(value) | Self::Right(value) => (0, value),
+            Self::Top(value) | Self::Bottom(value) => (1, value),
+        };
+        let distance = to.position[axis] - from.position[axis];
+        let amount = if distance.abs() <= f32::EPSILON {
+            0.0
+        } else {
+            ((value - from.position[axis]) / distance).clamp(0.0, 1.0)
+        };
+        from.interpolate(to, amount)
+    }
+}
+
+fn clip_polygon(polygon: &[ClipVertex], edge: ClipEdge) -> Vec<ClipVertex> {
+    let Some(&last) = polygon.last() else {
+        return Vec::new();
+    };
+    let mut output = Vec::with_capacity(polygon.len() + 1);
+    let mut previous = last;
+    let mut previous_inside = edge.inside(previous);
+    for &current in polygon {
+        let current_inside = edge.inside(current);
+        if current_inside != previous_inside {
+            output.push(edge.intersection(previous, current));
+        }
+        if current_inside {
+            output.push(current);
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    output
 }
 
 fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
@@ -668,15 +774,21 @@ struct PaneGpu {
 struct DisplayAdjustment {
     exposure_ev: f32,
     gamma: f32,
-    _padding: [f32; 2],
+    color_gain_red: f32,
+    color_gain_green: f32,
+    color_gain_blue: f32,
+    _padding: [f32; 3],
 }
 
 impl DisplayAdjustment {
-    const fn new(exposure_ev: f32, gamma: f32) -> Self {
+    const fn new(exposure_ev: f32, gamma: f32, color_gain: [f32; 3]) -> Self {
         Self {
             exposure_ev,
             gamma,
-            _padding: [0.0; 2],
+            color_gain_red: color_gain[0],
+            color_gain_green: color_gain[1],
+            color_gain_blue: color_gain[2],
+            _padding: [0.0; 3],
         }
     }
 }
@@ -698,10 +810,12 @@ mod tests {
             center: [0.5, 0.5],
             source_size,
             source_pixels_per_physical_pixel: 1.0,
+            rotation_degrees: 0.0,
             physical_size,
             clip_rect: [0.0, 0.0, physical_size[0], physical_size[1]],
             exposure_ev: 0.0,
             gamma: 1.0,
+            color_gain: [1.0; 3],
         }
     }
 
@@ -716,6 +830,18 @@ mod tests {
             TilePixelFormat::Rgba8Srgb.wgpu_format(),
             wgpu::TextureFormat::Rgba8UnormSrgb
         );
+    }
+
+    #[test]
+    fn display_adjustment_matches_the_two_vec4_shader_layout() {
+        assert_eq!(size_of::<DisplayAdjustment>(), 32);
+        let adjustment = DisplayAdjustment::new(1.25, 0.8, [0.9, 1.1, 1.2]);
+        assert_eq!(adjustment.exposure_ev, 1.25);
+        assert_eq!(adjustment.gamma, 0.8);
+        assert_eq!(adjustment.color_gain_red, 0.9);
+        assert_eq!(adjustment.color_gain_green, 1.1);
+        assert_eq!(adjustment.color_gain_blue, 1.2);
+        assert_eq!(adjustment._padding, [0.0; 3]);
     }
 
     #[test]
@@ -800,13 +926,55 @@ mod tests {
         let vertices = visible_tile_vertices([100, 100], [0, 0, 100, 100], state)
             .expect("left split remains visible");
 
-        assert_eq!(vertices[0], Vertex::new(-1.0, 1.0, 0.0, 0.0));
-        assert!((vertices[2].position[0] - -0.2).abs() < 0.000_001);
-        assert_eq!(vertices[2].position[1], -1.0);
-        assert_eq!(vertices[2].uv, [0.4, 1.0]);
-        assert!((vertices[5].position[0] - -0.2).abs() < 0.000_001);
-        assert_eq!(vertices[5].position[1], 1.0);
-        assert_eq!(vertices[5].uv, [0.4, 0.0]);
+        let contains = |position: [f32; 2], uv: [f32; 2]| {
+            vertices.iter().any(|vertex| {
+                (vertex.position[0] - position[0]).abs() < 0.000_001
+                    && (vertex.position[1] - position[1]).abs() < 0.000_001
+                    && (vertex.uv[0] - uv[0]).abs() < 0.000_001
+                    && (vertex.uv[1] - uv[1]).abs() < 0.000_001
+            })
+        };
+        assert!(contains([-1.0, 1.0], [0.0, 0.0]));
+        assert!(contains([-0.2, -1.0], [0.4, 1.0]));
+        assert!(contains([-0.2, 1.0], [0.4, 0.0]));
+    }
+
+    #[test]
+    fn rotation_is_applied_around_the_pane_center_before_clipping() {
+        let mut state = pane_state([100, 50], [100.0, 100.0]);
+        state.rotation_degrees = 90.0;
+        let vertices = visible_tile_vertices([100, 50], [0, 0, 100, 50], state)
+            .expect("rotated image remains visible");
+
+        let min_x = vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::INFINITY, f32::min);
+        let max_x = vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let max_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((min_x + 0.5).abs() < 0.000_001);
+        assert!((max_x - 0.5).abs() < 0.000_001);
+        assert!((min_y + 1.0).abs() < 0.000_001);
+        assert!((max_y - 1.0).abs() < 0.000_001);
+
+        state.clip_rect = [0.0, 0.0, 50.0, 100.0];
+        let clipped = visible_tile_vertices([100, 50], [0, 0, 100, 50], state)
+            .expect("left half of rotated image remains visible");
+        assert!(
+            clipped
+                .iter()
+                .all(|vertex| vertex.position[0] <= f32::EPSILON)
+        );
     }
 
     #[test]

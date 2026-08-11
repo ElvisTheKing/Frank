@@ -73,7 +73,8 @@ Current checkpoint: four approximately 80.6 MP OM-5 ORFs open through 3200×2400
 - [x] Upgrade automatic registration to multiscale binary feature descriptors, mutual matching, and robust consensus fitting.
 - [x] Build a versioned synthetic registration-quality fixture corpus with expected transforms.
 - [ ] Extend the registration-quality corpus with approved, compact fixtures derived from supported cameras.
-- [ ] Add optional rotation registration after defining pixel-comparison and resampling behavior.
+- [x] Apply automatic and manual rotation registration with synchronized navigation and clipped GPU rendering.
+- [x] Add manual 90°, 1°, and 0.1° pane rotation plus non-destructive reference tone/color matching.
 - [ ] Basic exposure, brightness, contrast, and color adjustments.
 
 ## Release 3 research

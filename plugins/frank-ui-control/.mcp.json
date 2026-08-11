@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "frank-egui": {
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$root = $env:FRANK_REPOSITORY; if (-not $root) { $cursor = (Get-Location).Path; while ($cursor) { if (Test-Path -LiteralPath (Join-Path $cursor 'plugins/frank-ui-control/scripts/start-frank-egui-mcp.ps1')) { $root = $cursor; break }; $parent = Split-Path -Parent $cursor; if ($parent -eq $cursor) { break }; $cursor = $parent } }; if (-not $root) { throw 'Frank repository not found. Open Codex in the cloned repository or set FRANK_REPOSITORY.' }; & (Join-Path $root 'plugins/frank-ui-control/scripts/start-frank-egui-mcp.ps1') -Repository $root; exit $LASTEXITCODE"
+      ]
+    }
+  }
+}

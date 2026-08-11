@@ -1,0 +1,34 @@
+{
+  "name": "frank-ui-control",
+  "version": "0.1.0",
+  "description": "Drive Frank's isolated egui UI-test environment with semantic actions and screenshots.",
+  "author": {
+    "name": "Frank contributors"
+  },
+  "license": "AGPL-3.0-or-later",
+  "keywords": [
+    "frank",
+    "egui",
+    "ui-testing",
+    "docker"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Frank UI Control",
+    "shortDescription": "Drive and inspect Frank's Docker-isolated UI.",
+    "longDescription": "Starts Frank in its isolated Xvfb and software-Vulkan container, then exposes egui's semantic inspection tools for actions, screenshots, and repeatable QA passes.",
+    "developerName": "Frank contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run Frank's rotation UI smoke test.",
+      "Inspect Frank's current widget tree.",
+      "Capture and review Frank's UI."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
